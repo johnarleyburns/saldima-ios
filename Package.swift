@@ -49,7 +49,7 @@ let package = Package(
 #else
 let package = Package(
     name: "Saldima",
-    platforms: [.iOS("27.0"), .macOS(.v14)],
+    platforms: [.iOS("27.0"), .macOS(.v15)],
     products: [
         .library(name: "SaldimaCore", targets: ["SaldimaCore"]),
         .library(name: "SaldimaSync", targets: ["SaldimaSync"]),
