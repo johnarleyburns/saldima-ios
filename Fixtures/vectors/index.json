@@ -1,0 +1,6 @@
+{
+  "schemaVersion": 1,
+  "description": "Saldima golden vectors. Replay, do not reinterpret. Pinned by web commit.",
+  "money": "money.json",
+  "guid": "guid.json"
+}

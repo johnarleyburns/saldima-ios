@@ -1,0 +1,201 @@
+{
+  "schemaVersion": 1,
+  "fraction": "100",
+  "cases": [
+    {
+      "id": "add_thirds",
+      "op": "add",
+      "left": {
+        "num": "1",
+        "denom": "3"
+      },
+      "right": {
+        "num": "1",
+        "denom": "3"
+      },
+      "expected": {
+        "num": "2",
+        "denom": "3"
+      }
+    },
+    {
+      "id": "add_cents",
+      "op": "add",
+      "left": {
+        "num": "1234",
+        "denom": "100"
+      },
+      "right": {
+        "num": "766",
+        "denom": "100"
+      },
+      "expected": {
+        "num": "20",
+        "denom": "1"
+      }
+    },
+    {
+      "id": "add_beyond_safe_integer",
+      "op": "add",
+      "left": {
+        "num": "9007199254740993",
+        "denom": "100"
+      },
+      "right": {
+        "num": "7",
+        "denom": "100"
+      },
+      "expected": {
+        "num": "90071992547410",
+        "denom": "1"
+      }
+    },
+    {
+      "id": "subtract_cents",
+      "op": "subtract",
+      "left": {
+        "num": "1",
+        "denom": "100"
+      },
+      "right": {
+        "num": "3",
+        "denom": "100"
+      },
+      "expected": {
+        "num": "-1",
+        "denom": "50"
+      }
+    },
+    {
+      "id": "multiply_quantity",
+      "op": "multiply",
+      "left": {
+        "num": "250",
+        "denom": "100"
+      },
+      "right": {
+        "num": "2",
+        "denom": "1"
+      },
+      "expected": {
+        "num": "5",
+        "denom": "1"
+      }
+    },
+    {
+      "id": "round_down",
+      "op": "round",
+      "value": {
+        "num": "12344",
+        "denom": "1000"
+      },
+      "fraction": "100",
+      "expected": {
+        "num": "1234",
+        "denom": "100"
+      }
+    },
+    {
+      "id": "round_up",
+      "op": "round",
+      "value": {
+        "num": "12346",
+        "denom": "1000"
+      },
+      "fraction": "100",
+      "expected": {
+        "num": "1235",
+        "denom": "100"
+      }
+    },
+    {
+      "id": "round_tie_to_even_down",
+      "op": "round",
+      "value": {
+        "num": "12345",
+        "denom": "1000"
+      },
+      "fraction": "100",
+      "expected": {
+        "num": "1234",
+        "denom": "100"
+      }
+    },
+    {
+      "id": "round_tie_to_even_up",
+      "op": "round",
+      "value": {
+        "num": "12355",
+        "denom": "1000"
+      },
+      "fraction": "100",
+      "expected": {
+        "num": "1236",
+        "denom": "100"
+      }
+    },
+    {
+      "id": "round_negative_tie",
+      "op": "round",
+      "value": {
+        "num": "-12345",
+        "denom": "1000"
+      },
+      "fraction": "100",
+      "expected": {
+        "num": "-1234",
+        "denom": "100"
+      }
+    },
+    {
+      "id": "parse_negative_tie",
+      "op": "parse",
+      "text": "-12.345",
+      "fraction": "100",
+      "expected": {
+        "num": "-1234",
+        "denom": "100"
+      }
+    },
+    {
+      "id": "parse_plain",
+      "op": "parse",
+      "text": "12.355",
+      "fraction": "100",
+      "expected": {
+        "num": "1236",
+        "denom": "100"
+      }
+    },
+    {
+      "id": "format_cents",
+      "op": "format",
+      "value": {
+        "num": "1234",
+        "denom": "100"
+      },
+      "fraction": "100",
+      "expected": "12.34"
+    },
+    {
+      "id": "format_negative",
+      "op": "format",
+      "value": {
+        "num": "-5",
+        "denom": "100"
+      },
+      "fraction": "100",
+      "expected": "-0.05"
+    },
+    {
+      "id": "format_rounds",
+      "op": "format",
+      "value": {
+        "num": "12345",
+        "denom": "1000"
+      },
+      "fraction": "100",
+      "expected": "12.34"
+    }
+  ]
+}
