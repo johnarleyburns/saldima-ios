@@ -1,0 +1,33 @@
+Saldima for iPhone
+Copyright (C) 2026 John Arley Burns
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License as published by the Free
+Software Foundation, version 3 only. See LICENSE.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU Affero General Public License for more details.
+
+References and credits
+----------------------
+
+Saldima for iPhone is an independent implementation. It is not a fork of, and
+contains no code copied from, the projects below.
+
+- GnuCash (https://www.gnucash.org) — the file format, accounting model and
+  desktop application this product is compatible with. GnuCash is licensed
+  under GPL-2.0-or-later. Used as a behavioural reference only; no GnuCash code
+  is linked into Saldima or shipped to users.
+- gnucash-web (https://github.com/joshuabach/gnucash-web) — a GPLv3 reference
+  for screens and scope. Behavioural reference only; no code copied.
+- piecash (https://pypi.org/project/piecash) — a GPLv3 Python library.
+  Behavioural reference only; no code copied.
+- python3-gnucash — GPL bindings that run only in the web project's isolated
+  CI oracle and converter container, never in this app.
+
+The name "GnuCash" is a trademark of the GnuCash project. Saldima uses it only
+to describe compatibility.
+
+Dependencies bundled with Saldima must be MIT, BSD, Apache-2.0, ISC, 0BSD or
+CC0; CI enforces this.
