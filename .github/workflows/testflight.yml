@@ -104,7 +104,8 @@ jobs:
             -archivePath "$RUNNER_TEMP/Saldima.xcarchive" \
             DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM_ID" \
             MARKETING_VERSION="0.1.0" \
-            CURRENT_PROJECT_VERSION="$build_number"
+            CURRENT_PROJECT_VERSION="$build_number" \
+            SALDIMA_SOURCE_COMMIT="$(git rev-parse HEAD)"
           cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

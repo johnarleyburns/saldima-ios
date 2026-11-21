@@ -18,6 +18,7 @@ settings:
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
     IPHONEOS_DEPLOYMENT_TARGET: "27.0"
+    SALDIMA_SOURCE_COMMIT: main
     ENABLE_USER_SCRIPT_SANDBOXING: YES
 
 targets:
@@ -39,6 +40,7 @@ targets:
         CFBundleDisplayName: Saldima
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        SaldimaSourceCommit: "$(SALDIMA_SOURCE_COMMIT)"
         ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
         UIApplicationSupportsIndirectInputEvents: true
@@ -58,7 +60,7 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         CODE_SIGN_STYLE: Automatic
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
-        ASSETCATALOG_COMPILER_APPICON_NAME: ""
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
 
 schemes:
   Saldima:

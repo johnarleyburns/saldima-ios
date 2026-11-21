@@ -11,6 +11,7 @@ while IFS= read -r file; do
     case " $EXEMPT " in
         *" $file "*) continue ;;
     esac
+    [ -f "$file" ] || continue
     case "$file" in
         *.swift|*.sh|*.yml|*.yaml|*.md) ;;
         *) continue ;;

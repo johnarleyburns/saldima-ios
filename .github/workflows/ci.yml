@@ -60,6 +60,7 @@ jobs:
             -project Saldima.xcodeproj \
             -scheme Saldima \
             -destination 'generic/platform=iOS' \
+            SALDIMA_SOURCE_COMMIT="${{ github.sha }}" \
             CODE_SIGNING_ALLOWED=NO
       - name: Swift tests on macOS
         run: swift test -Xswiftc -warnings-as-errors

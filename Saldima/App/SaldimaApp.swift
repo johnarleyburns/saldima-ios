@@ -5,7 +5,7 @@ import SwiftUI
 struct SaldimaApp: App {
     var body: some Scene {
         WindowGroup {
-            RootView()
+            RootTabView()
         }
     }
 }
