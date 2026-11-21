@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "book": "synthetic-mini",
+  "note": "Synthetic fixture shared with saldima-ios. A real-book vector awaits the owner's fixture.",
+  "accounts": [
+    {
+      "guid": "11111111111111111111111111111111",
+      "name": "Assets",
+      "type": "ASSET",
+      "parent": null,
+      "hidden": false,
+      "placeholder": false
+    },
+    {
+      "guid": "22222222222222222222222222222222",
+      "name": "Bank",
+      "type": "BANK",
+      "parent": "11111111111111111111111111111111",
+      "hidden": false,
+      "placeholder": false
+    },
+    {
+      "guid": "33333333333333333333333333333333",
+      "name": "Checking",
+      "type": "BANK",
+      "parent": "22222222222222222222222222222222",
+      "hidden": false,
+      "placeholder": false
+    },
+    {
+      "guid": "44444444444444444444444444444444",
+      "name": "Expenses",
+      "type": "EXPENSE",
+      "parent": null,
+      "hidden": false,
+      "placeholder": false
+    },
+    {
+      "guid": "55555555555555555555555555555555",
+      "name": "Rent",
+      "type": "EXPENSE",
+      "parent": "44444444444444444444444444444444",
+      "hidden": false,
+      "placeholder": false
+    },
+    {
+      "guid": "66666666666666666666666666666666",
+      "name": "Income",
+      "type": "INCOME",
+      "parent": null,
+      "hidden": false,
+      "placeholder": false
+    },
+    {
+      "guid": "77777777777777777777777777777777",
+      "name": "Salary",
+      "type": "INCOME",
+      "parent": "66666666666666666666666666666666",
+      "hidden": false,
+      "placeholder": false
+    }
+  ]
+}
