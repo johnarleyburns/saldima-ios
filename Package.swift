@@ -3,8 +3,15 @@
 import PackageDescription
 
 let portableTargets: [Target] = [
+    .systemLibrary(
+        name: "CSQLite",
+        path: "Support/CSQLite",
+        pkgConfig: "sqlite3",
+        providers: [.apt(["libsqlite3-dev"])]
+    ),
     .target(
         name: "SaldimaCore",
+        dependencies: ["CSQLite"],
         path: "SaldimaCore",
         swiftSettings: [.swiftLanguageMode(.v6)]
     ),
