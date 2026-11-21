@@ -71,6 +71,7 @@ networking, and must also build on Linux for the container test job.
 | `bash scripts/check-swift6.sh` | reject Swift 5 modes and concurrency escape hatches |
 | `bash scripts/check-observable.sh` | reject `ObservableObject` |
 | `bash scripts/check-spdx.sh` | every authored file carries the AGPL SPDX header |
+| `bash scripts/check-licenses.sh` | remote Swift packages must be allowlisted with a permissive licence; GRDB is banned |
 | `bash scripts/pull-vectors.sh` | fetch vectors from the pinned web commit; fails on schema drift |
 | `xcodebuild build -project Saldima.xcodeproj -scheme Saldima -destination generic/platform=iOS CODE_SIGNING_ALLOWED=NO` | CI compile |
 

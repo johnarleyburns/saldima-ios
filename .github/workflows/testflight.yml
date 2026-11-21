@@ -72,6 +72,7 @@ jobs:
           bash scripts/check-swift6.sh
           bash scripts/check-observable.sh
           bash scripts/check-spdx.sh
+          bash scripts/check-licenses.sh
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Generate project
