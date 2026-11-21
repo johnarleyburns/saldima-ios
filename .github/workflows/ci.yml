@@ -48,6 +48,8 @@ jobs:
         run: bash scripts/check-observable.sh
       - name: SPDX guard
         run: bash scripts/check-spdx.sh
+      - name: Clock/ID seam guard
+        run: bash scripts/check-seams.sh
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Generate project
