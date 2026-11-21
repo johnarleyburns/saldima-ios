@@ -1,0 +1,12 @@
+#!/bin/bash
+# SPDX-License-Identifier: AGPL-3.0-only
+# .githooks/pre-commit — fast host test gate.
+# Install with: git config core.hooksPath .githooks
+set -euo pipefail
+
+# git exports GIT_INDEX_FILE to hooks; SwiftPM git operations can inherit it.
+unset GIT_INDEX_FILE
+
+cd "$(git rev-parse --show-toplevel)"
+echo "=== pre-commit: swift test ==="
+swift test -Xswiftc -warnings-as-errors

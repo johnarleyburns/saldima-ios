@@ -1,0 +1,70 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+name: Saldima
+options:
+  bundleIdPrefix: guru.parso
+  deploymentTarget:
+    iOS: "27.0"
+  createIntermediateGroups: true
+  developmentLanguage: en
+
+packages:
+  Saldima:
+    path: .
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    IPHONEOS_DEPLOYMENT_TARGET: "27.0"
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+
+targets:
+  Saldima:
+    type: application
+    platform: iOS
+    sources:
+      - path: Saldima
+        excludes:
+          - Resources/Info.plist
+    dependencies:
+      - package: Saldima
+        product: SaldimaCore
+      - package: Saldima
+        product: SaldimaSync
+    info:
+      path: Saldima/Resources/Info.plist
+      properties:
+        CFBundleDisplayName: Saldima
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        ITSAppUsesNonExemptEncryption: false
+        UILaunchScreen: {}
+        UIApplicationSupportsIndirectInputEvents: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: guru.parso.saldima
+        PRODUCT_NAME: Saldima
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGN_STYLE: Automatic
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+
+schemes:
+  Saldima:
+    build:
+      targets:
+        Saldima: all
+    run:
+      config: Debug
+    archive:
+      config: Release
