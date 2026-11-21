@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Public preview macOS runner with Xcode 27 (actions/runner-images).
+self-hosted-runner:
+  labels:
+    - xcode-27
