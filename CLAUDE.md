@@ -109,14 +109,17 @@ covers portable logic.
 
 ## Golden vectors and the link to the web
 
-- The web track generates `fixtures/vectors/{index,money,guid}.json` with
+- The web track generates `fixtures/vectors/{index,money,guid,accounts}.json` with
   `pnpm vectors`. This repo pins a **web commit SHA** and commits the files.
   `scripts/pull-vectors.sh` fetches exactly that revision.
-- Current pin: `49c7f83369185b839c4cdede8423f0bcbedc50f5` (web P0-7 merged).
+- Current pin: `5fa44eb92334a7dfbb16bd698cc0047d8f723e67` (web account-tree
+  vector merged).
   Update the pin in one PR with the regenerated files and a note in
   `docs/vectors.md`.
 - Never invent behaviour the web has not defined. If a vector or `/api/v1`
   schema is missing, stop and ask; add it to the web track's plan.
+- `accounts.json` currently describes a synthetic fixture; the real-book vector
+  keeps the same schema when the owner supplies the book.
 - A vector schema version newer than this app understands must fail loudly.
 
 ## License and dependencies
@@ -177,8 +180,8 @@ covers portable logic.
   human; do not lower the deployment target silently.
 - **Fixture book.** The real anonymised GnuCash 5.x book is human-supplied; the
   SQLite actor and account-tree acceptance cannot fully pass without it.
-- **Account-tree vector.** The web track has money/GUID vectors but no account
-  vector yet; P0-5's cross-track comparison is pending that addition.
+- **Account-tree vector.** The synthetic vector now matches across tracks.
+  The real-book vector is still pending the owner's fixture.
 - **Purchases.** Standalone use is free with an optional one-time StoreKit 2
   unlock (open question). Hosting is bought on the web; Apple may require the
   subscription to be sold in the app too. Decide before P5.

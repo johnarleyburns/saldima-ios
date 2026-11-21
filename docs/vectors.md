@@ -10,8 +10,8 @@ truth. This app replays the vectors; it never re-derives expected values.
 | | |
 | --- | --- |
 | Web repo | `johnarleyburns/saldima` |
-| Commit | `49c7f83369185b839c4cdede8423f0bcbedc50f5` |
-| Files | `index.json`, `money.json`, `guid.json` |
+| Commit | `5fa44eb92334a7dfbb16bd698cc0047d8f723e67` |
+| Files | `index.json`, `money.json`, `guid.json`, `accounts.json` |
 | Schema | `1` |
 
 ## Rules
@@ -22,8 +22,8 @@ truth. This app replays the vectors; it never re-derives expected values.
   tests; never silently ignore unknown fields.
 - The web track changes a vector before any app code depends on it. If a case
   is missing, file it on the web repo; do not invent it here.
-- The current vectors cover money and GUIDs. An account-tree vector is pending
-  the web track's fixture book (see P0-5).
+- The account-tree vector currently comes from a synthetic fixture. The real
+  book vector keeps the same schema when the owner supplies it (P0-5b).
 
 ## Regenerating
 
