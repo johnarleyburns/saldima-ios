@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Remote Swift packages allowed in this repo. Format: <git-url> <SPDX-license>
+# Empty on purpose: P0 has no third-party Swift dependencies.
+# Allowed licences: MIT, BSD-2-Clause, BSD-3-Clause, Apache-2.0, ISC, 0BSD, CC0-1.0.
