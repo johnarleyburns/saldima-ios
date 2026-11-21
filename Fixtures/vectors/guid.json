@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "pattern": "^[0-9a-f]{32}$",
+  "valid": [
+    "0123456789abcdef0123456789abcdef",
+    "00000000000000000000000000000000",
+    "ffffffffffffffffffffffffffffffff",
+    "fedcba9876543210fedcba9876543210"
+  ],
+  "invalid": [
+    "0123456789ABCDEF0123456789abcdef",
+    "0123456789abcdef0123456789abcde",
+    "0123456789abcdef0123456789abcdef0",
+    "g123456789abcdef0123456789abcdef",
+    "",
+    "not-a-guid"
+  ]
+}
