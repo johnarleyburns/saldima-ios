@@ -41,7 +41,8 @@ purchase sheet appears on device, sign in with that tester.
 
 ## 4. GitHub `ios-release` environment
 
-Create the environment with **you as required reviewer**. Add secrets:
+Create the environment **without required reviewers** (automatic releases) and
+add secrets:
 
 | Secret | Value |
 | --- | --- |
@@ -69,16 +70,18 @@ The `.p12` must contain the Apple Distribution certificate and its private key.
 
 ## 5. Build and TestFlight
 
-1. Actions → **testflight** → Run workflow (main). The job waits for your
-   approval on `ios-release`.
+1. Merge a pull request authored by `johnarleyburns` into `main`. The
+   `testflight` workflow starts automatically; the gate job confirms the merge
+   commit belongs to a merged PR by that account and skips everything else.
 2. The archive uploads to App Store Connect (build number = commit count,
    marketing version `0.1.0`).
 3. TestFlight → Saldima → Internal Testing → add yourself; install the
    TestFlight app on the iPhone and accept the invite.
 4. The device must meet the app’s iOS 27 deployment target.
 
-The agent never uploads or approves; this lane is owner-only. If the build fails
-with signing, check the certificate/profile pair and the bundle ID.
+A manual **Run workflow** dispatch still works for the owner account. PRs from
+other authors and direct pushes do not release. If the build fails with signing,
+check the certificate/profile pair and the bundle ID.
 
 ## 6. What to verify
 

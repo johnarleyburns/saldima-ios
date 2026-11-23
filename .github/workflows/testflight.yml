@@ -1,9 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 name: testflight
 
-# Manual only: the owner starts this lane and approves the ios-release
-# environment. It never runs on a pull request or a push.
+# Every merge to main uploads to TestFlight automatically, but only when the
+# merged pull request was authored by the repository owner (johnarleyburns).
+# Direct pushes and PRs from anyone else are skipped. A manual dispatch is
+# allowed for the owner only.
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -14,9 +18,46 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  upload:
-    name: Archive and upload (owner approval)
+  gate:
+    name: Owner-authored merge gate
     if: github.repository == 'johnarleyburns/saldima-ios'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      allowed: ${{ steps.check.outputs.allowed }}
+    steps:
+      - name: Require a merged PR authored by johnarleyburns
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          EVENT: ${{ github.event_name }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          allowed=false
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            if [ "$ACTOR" = "johnarleyburns" ]; then allowed=true; fi
+          else
+            authors="$(gh api "repos/$REPO/commits/$SHA/pulls" \
+              --jq '.[] | select(.merged_at != null) | .user.login' 2>/dev/null || true)"
+            if printf '%s\n' "$authors" | grep -qx 'johnarleyburns'; then
+              allowed=true
+            fi
+          fi
+          echo "allowed=$allowed" >> "$GITHUB_OUTPUT"
+          if [ "$allowed" != "true" ]; then
+            echo "::notice title=TestFlight skipped::No merged pull request by johnarleyburns for $SHA."
+          fi
+
+  upload:
+    name: Archive and upload
+    needs: gate
+    if: needs.gate.outputs.allowed == 'true'
     runs-on: xcode-27
     timeout-minutes: 45
     environment:
@@ -107,6 +148,7 @@ jobs:
             -archivePath "$RUNNER_TEMP/Saldima.xcarchive" \
             DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM_ID" \
             CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
             PROVISIONING_PROFILE_SPECIFIER="$PROVISIONING_PROFILE_NAME" \
             MARKETING_VERSION="0.1.0" \
             CURRENT_PROJECT_VERSION="$build_number" \
