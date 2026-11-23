@@ -3,9 +3,21 @@ import SwiftUI
 import SaldimaCore
 
 struct SettingsView: View {
+    let session: BookSession
+
     var body: some View {
         NavigationStack {
             List {
+                Section("Book") {
+                    LabeledContent("Open book", value: session.bookName)
+                    Menu("Create a book from a template") {
+                        ForEach(BookTemplates.all) { template in
+                            Button(template.name) {
+                                Task { await session.createBook(from: template) }
+                            }
+                        }
+                    }
+                }
                 Section("About") {
                     NavigationLink("About Saldima") {
                         AboutView()
@@ -43,5 +55,5 @@ struct AboutView: View {
 }
 
 #Preview {
-    SettingsView()
+    SettingsView(session: BookSession())
 }
