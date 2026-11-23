@@ -2,10 +2,12 @@
 import SwiftUI
 
 struct RootTabView: View {
+    @State private var session = BookSession()
+
     var body: some View {
         TabView {
             Tab("Accounts", systemImage: "building.columns") {
-                AccountsView()
+                AccountsView(session: session)
             }
             Tab("Register", systemImage: "list.bullet.rectangle") {
                 RegisterView()
@@ -17,8 +19,11 @@ struct RootTabView: View {
                 ReportsView()
             }
             Tab("Settings", systemImage: "gearshape") {
-                SettingsView()
+                SettingsView(session: session)
             }
+        }
+        .task {
+            await session.openDefaultBook()
         }
     }
 }

@@ -18,10 +18,15 @@ and removable.
 ## Checklist
 
 - [ ] [#21 M1 Accounting verification kernel](https://github.com/johnarleyburns/saldima-ios/issues/21):
-      Money, half-up posting, ledger, trial balance, balance sheet, P&L and the
-      GnuCash scenarios. Core landed; scenarios and parity remain.
+      Money, half-up posting, ledger, trial balance, balance sheet, P&L,
+      `verifyLedger` and the first GnuCash scenarios landed. The two-year
+      partnership fixture remains.
 - [ ] [#20 M2 Standalone book, templates and account tree](https://github.com/johnarleyburns/saldima-ios/issues/20):
-      create/open/save SQLite `.gnucash`, templates, account CRUD, Files/iCloud.
+      **core landed**: `BookWriter` creates a GnuCash 5.14 book from all three
+      templates (verified by opening and re-saving it with GnuCash 5.14);
+      `BookStore` creates/updates/moves/deletes accounts with the web's rules;
+      Accounts UI and Settings template picker are wired. Files/iCloud import and
+      export remain.
 - [ ] [#22 M3 Optional Saldima sync](https://github.com/johnarleyburns/saldima-ios/issues/22):
       `/api/v1`, Keychain device token, download/upload/merge, no network in
       standalone.
@@ -29,6 +34,7 @@ and removable.
       core policy + StoreKit adapter + Settings card landed; App Store Connect
       product remains owner-only.
 - [ ] Android P0 parity: see `saldima-android/docs/plans/P0.md`.
+- Web↔mobile matrix and gate: `saldima/docs/plans/mobile-parity.md`.
 
 ## Exit
 

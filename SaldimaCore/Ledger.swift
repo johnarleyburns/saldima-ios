@@ -103,6 +103,21 @@ public struct BalanceSheet: Sendable, Hashable {
     public var balanced: Bool { assets == totalLiabilitiesAndEquity }
 }
 
+public enum LedgerInvariantCode: String, Sendable, Hashable {
+    case unbalancedTrialBalance = "UNBALANCED_TRIAL_BALANCE"
+    case assetsNotEqualLiabilitiesPlusEquity = "ASSETS_NE_LIABILITIES_PLUS_EQUITY"
+}
+
+public struct LedgerInvariantFailure: Sendable, Hashable {
+    public let code: LedgerInvariantCode
+    public let message: String
+
+    public init(code: LedgerInvariantCode, message: String) {
+        self.code = code
+        self.message = message
+    }
+}
+
 public struct IncomeStatement: Sendable, Hashable {
     public let revenue: Money
     public let expenses: Money
@@ -207,6 +222,29 @@ public enum LedgerEngine {
         let retained = try Money.add(income, expense).negated()
         let total = try Money.add(try Money.add(liabilities, equity), retained)
         return BalanceSheet(assets: assets, liabilities: liabilities, equity: equity, retainedEarnings: retained, totalLiabilitiesAndEquity: total)
+    }
+
+    /// Checks a ledger that may have come from an import, not through `post`.
+    /// Same codes and semantics as `verifyLedger` on the web track.
+    public static func verify(_ ledger: Ledger, asOf: String) throws -> [LedgerInvariantFailure] {
+        var failures: [LedgerInvariantFailure] = []
+        if try !trialBalance(ledger, asOf: asOf).balanced {
+            failures.append(
+                LedgerInvariantFailure(
+                    code: .unbalancedTrialBalance,
+                    message: "trial balance debits do not equal credits"
+                )
+            )
+        }
+        if try !balanceSheet(ledger, asOf: asOf).balanced {
+            failures.append(
+                LedgerInvariantFailure(
+                    code: .assetsNotEqualLiabilitiesPlusEquity,
+                    message: "assets do not equal liabilities plus equity"
+                )
+            )
+        }
+        return failures
     }
 
     public static func incomeStatement(_ ledger: Ledger, from: String, to: String) throws -> IncomeStatement {
