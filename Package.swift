@@ -9,9 +9,15 @@ let portableTargets: [Target] = [
         pkgConfig: "sqlite3",
         providers: [.apt(["libsqlite3-dev"])]
     ),
+    .systemLibrary(
+        name: "CZlib",
+        path: "Support/CZlib",
+        pkgConfig: "zlib",
+        providers: [.apt(["zlib1g-dev"])]
+    ),
     .target(
         name: "SaldimaCore",
-        dependencies: ["CSQLite"],
+        dependencies: ["CSQLite", "CZlib"],
         path: "SaldimaCore",
         swiftSettings: [.swiftLanguageMode(.v6)]
     ),
