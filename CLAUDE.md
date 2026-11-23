@@ -163,10 +163,14 @@ covers portable logic.
 
 ## Hard limits for agents
 
-1. **Never deploy, tag, upload to TestFlight, or touch secrets, environments or
-   rulesets.** Open PRs only. The owner approves every upload and release.
+1. **Never deploy, tag, or upload to TestFlight by hand, and never touch secrets,
+   environments or rulesets unless the owner explicitly asks.** Open PRs only.
+   TestFlight uploads are automatic: merging a PR authored by `johnarleyburns`
+   into `main` starts the `testflight` workflow, and its gate job skips direct
+   pushes and other authors.
 2. Never create or modify the `ios-release` environment, App Store Connect keys,
-   certificates, provisioning profiles, branch protection or Actions secrets.
+   certificates, provisioning profiles, branch protection or Actions secrets
+   without an explicit owner request.
 3. Never add a GPL/AGPL dependency or copy GPL code.
 4. Never commit keys, tokens, customer books or personal data. Fixtures must be
    anonymised and licensed for the repo.
@@ -182,8 +186,8 @@ covers portable logic.
   no warnings.
 - A completion audit against the issue finds no gaps.
 - `CLAUDE.md` and the phase checklist are updated if a decision changed.
-- No secrets, environments, rulesets, tags, TestFlight uploads or deploys
-  touched.
+- No secrets, environments, rulesets, tags, manual TestFlight uploads or
+  deploys touched.
 
 ## Risks and open questions
 
