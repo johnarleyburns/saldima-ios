@@ -99,7 +99,60 @@ extension Money {
         } else if twiceRemainder == denom && quotient % 2 != 0 {
             rounded += sign
         }
-        return Money(trustedNum: rounded, denom: fraction)
+        return rounded == 0 ? .zero : Money(trustedNum: rounded, denom: fraction)
+    }
+
+    /// GnuCash posting normalisation: round half away from zero (half-up).
+    public func roundedHalfUp(toFraction fraction: Int64) throws -> Money {
+        guard fraction > 0 else { throw MoneyError.nonPositiveFraction }
+        let scaled = try checkedMultiply(num, fraction)
+        let quotient = scaled / denom
+        let remainder = scaled % denom
+        let twiceRemainder = try checkedMultiply(Int64(remainder.magnitude), 2)
+        let sign: Int64 = remainder < 0 ? -1 : 1
+        let rounded = twiceRemainder >= denom ? quotient + sign : quotient
+        return rounded == 0 ? .zero : Money(trustedNum: rounded, denom: fraction)
+    }
+
+    /// Posting parse: exact decimal, then half-up normalisation.
+    public static func parseHalfUp(_ text: String, fraction: Int64) throws -> Money {
+        try parseExact(text).roundedHalfUp(toFraction: fraction)
+    }
+
+    public static func parseExact(_ text: String) throws -> Money {
+        var body = text[...]
+        var negative = false
+        if body.first == "-" {
+            negative = true
+            body = body.dropFirst()
+        } else if body.first == "+" {
+            body = body.dropFirst()
+        }
+        let pieces = body.split(separator: ".", omittingEmptySubsequences: false)
+        guard pieces.count == 1 || pieces.count == 2 else {
+            throw MoneyError.invalidDecimal
+        }
+        let whole = pieces[0]
+        let decimals = pieces.count == 2 ? pieces[1] : ""
+        guard !whole.isEmpty,
+              whole.allSatisfy({ $0.isASCII && $0.isNumber }),
+              decimals.allSatisfy({ $0.isASCII && $0.isNumber }),
+              pieces.count == 1 || !decimals.isEmpty
+        else {
+            throw MoneyError.invalidDecimal
+        }
+        guard let wholeValue = Int64(whole),
+              let decimalValue = Int64(decimals.isEmpty ? "0" : String(decimals))
+        else {
+            throw MoneyError.overflow
+        }
+        var scale: Int64 = 1
+        for _ in decimals {
+            scale = try checkedMultiply(scale, 10)
+        }
+        let scaledWhole = try checkedMultiply(wholeValue, scale)
+        let unscaled = try checkedAdd(scaledWhole, decimalValue)
+        return Money(trustedNum: negative ? -unscaled : unscaled, denom: scale)
     }
 
     public static func decimalPlaces(_ fraction: Int64) throws -> Int {

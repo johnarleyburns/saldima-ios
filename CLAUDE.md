@@ -21,6 +21,18 @@ logo. The web track is `johnarleyburns/saldima`.
 If the spec, design and this file disagree, stop and ask in the issue. Record
 undecided items under **Risks and open questions**; never guess.
 
+## Product model: standalone first
+
+- The app is a complete **standalone** GnuCash-compatible book. No Saldima
+  account, subscription or network is required.
+- Linking to a hosted Saldima book is optional and removable; the local
+  `.gnucash` file is the source of truth.
+- The only purchase is a one-time **Supporter** consumable
+  (`guru.parso.saldima.support.dev`). It never gates anything; success sets a
+  one-way local badge. No subscription, no ads, no analytics.
+- Android parity lives in `johnarleyburns/saldima-android` with
+  `saldima_supporter` as the equivalent Play Billing consumable.
+
 ## Stack and identity
 
 - **Xcode 27 / iOS 27 SDK**, Swift 6 language mode, complete strict
@@ -189,7 +201,7 @@ covers portable logic.
   web uses `bigint`. If a fixture exceeds `Int64`, fail loudly rather than
   truncate.
 
-## P0 status
+## P0 / mobile status
 
-See `docs/plans/P0.md`. P0 exits when all six items and the exit gate close,
+See `docs/plans/P0.md` and `docs/plans/P1-MOBILE.md`. P0 exits when all six items and the exit gate close,
 vectors replay, and the owner has installed the empty app on a physical iPhone.
