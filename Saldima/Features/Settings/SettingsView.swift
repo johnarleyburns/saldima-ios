@@ -11,6 +11,9 @@ struct SettingsView: View {
                         AboutView()
                     }
                 }
+                Section("Support") {
+                    SupporterCard()
+                }
                 Section("Source") {
                     Link("Source code", destination: SourceOffer.repository)
                 }
