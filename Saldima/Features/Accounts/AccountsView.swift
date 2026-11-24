@@ -197,16 +197,8 @@ struct AccountsView: View {
             } description: {
                 Text("Create a book to start. It lives on this device and works with no account or network.")
             } actions: {
-                Picker("Template", selection: $template) {
-                    ForEach(BookTemplates.all) { option in
-                        Text(option.name).tag(option)
-                    }
-                }
-                .pickerStyle(.menu)
-                Button("Create book") {
-                    Task { await session.createBook(from: template) }
-                }
-                .buttonStyle(.borderedProminent)
+                Button("New book\u{2026}") { sheet = .newBook }
+                    .buttonStyle(.borderedProminent)
             }
         } else if session.accounts.isEmpty {
             ContentUnavailableView(
