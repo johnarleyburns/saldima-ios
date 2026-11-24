@@ -16,6 +16,7 @@ final class BookSession {
     private(set) var accounts: [Account] = []
     private(set) var transactions: [StoredTransaction] = []
     private(set) var balances: [Guid: Money] = [:]
+    private(set) var totals: [Guid: Money] = [:]
     private(set) var netAssets: Money = .zero
     private(set) var profit: Money = .zero
     private(set) var fraction: Int64 = 100
@@ -197,6 +198,7 @@ final class BookSession {
         accounts = try await store.accounts()
         balances = try await store.balances()
         transactions = try await store.transactions()
+        totals = try AccountRollup.totals(accounts, balances: balances)
         if let currency = try await store.bookCurrency() {
             fraction = currency.fraction
         }
