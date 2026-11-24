@@ -4,10 +4,43 @@ import SaldimaCore
 
 struct SettingsView: View {
     let session: BookSession
+    @AppStorage(ThemeKeys.accent) private var accentRaw = AccentChoice.indigo.rawValue
+    @AppStorage(ThemeKeys.appearance) private var appearanceRaw = AppearanceChoice.system.rawValue
 
     var body: some View {
         NavigationStack {
             List {
+                Section("Appearance") {
+                    HStack(spacing: 14) {
+                        ForEach(AccentChoice.allCases) { choice in
+                            Button {
+                                accentRaw = choice.rawValue
+                            } label: {
+                                Circle()
+                                    .fill(choice.color)
+                                    .frame(width: 30, height: 30)
+                                    .overlay {
+                                        if choice.rawValue == accentRaw {
+                                            Image(systemName: "checkmark")
+                                                .font(.caption.bold())
+                                                .foregroundStyle(.white)
+                                        }
+                                    }
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(choice.name)
+                            .accessibilityAddTraits(
+                                choice.rawValue == accentRaw ? .isSelected : []
+                            )
+                        }
+                    }
+                    .padding(.vertical, 4)
+                    Picker("Theme", selection: $appearanceRaw) {
+                        ForEach(AppearanceChoice.allCases) { choice in
+                            Text(choice.name).tag(choice.rawValue)
+                        }
+                    }
+                }
                 Section("Book") {
                     LabeledContent("Open book", value: session.bookName)
                     Menu("Create a book from a template") {

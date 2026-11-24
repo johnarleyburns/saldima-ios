@@ -3,6 +3,16 @@ import SwiftUI
 
 struct RootTabView: View {
     @State private var session = BookSession()
+    @AppStorage(ThemeKeys.accent) private var accentRaw = AccentChoice.indigo.rawValue
+    @AppStorage(ThemeKeys.appearance) private var appearanceRaw = AppearanceChoice.system.rawValue
+
+    private var accent: AccentChoice {
+        AccentChoice(rawValue: accentRaw) ?? .indigo
+    }
+
+    private var appearance: AppearanceChoice {
+        AppearanceChoice(rawValue: appearanceRaw) ?? .system
+    }
 
     var body: some View {
         TabView {
@@ -22,6 +32,8 @@ struct RootTabView: View {
                 SettingsView(session: session)
             }
         }
+        .tint(accent.color)
+        .preferredColorScheme(appearance.scheme)
         .tabBarMinimizeBehavior(.onScrollDown)
         .task {
             await session.openDefaultBook()
