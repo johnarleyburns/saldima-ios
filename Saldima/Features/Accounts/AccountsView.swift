@@ -9,11 +9,29 @@ private struct AccountRow: Identifiable {
     var id: Guid { account.guid }
 }
 
-private func rows(_ accounts: [Account], depth: Int = 0) -> [AccountRow] {
+private func rows(
+    _ accounts: [Account],
+    depth: Int = 0,
+    collapsed: Set<Guid> = []
+) -> [AccountRow] {
     accounts.flatMap { account in
         [AccountRow(account: account, depth: depth)]
-            + rows(account.children, depth: depth + 1)
+            + (collapsed.contains(account.guid)
+                ? []
+                : rows(account.children, depth: depth + 1, collapsed: collapsed))
     }
+}
+
+private func branchGuids(_ accounts: [Account]) -> Set<Guid> {
+    var found: Set<Guid> = []
+    func walk(_ nodes: [Account]) {
+        for node in nodes where !node.children.isEmpty {
+            found.insert(node.guid)
+            walk(node.children)
+        }
+    }
+    walk(accounts)
+    return found
 }
 
 private func descendants(of guid: Guid, in accounts: [Account]) -> Set<Guid> {
@@ -40,6 +58,8 @@ struct AccountsView: View {
     let session: BookSession
     @State private var editor: EditorTarget?
     @State private var template: BookTemplate = BookTemplates.personal
+    /// GnuCash remembers which branches are folded; so do we, per device.
+    @AppStorage("saldima.collapsedAccounts") private var collapsedRaw = ""
 
     private struct EditorTarget: Identifiable {
         let account: Account?
@@ -52,6 +72,20 @@ struct AccountsView: View {
                 .navigationTitle("Accounts")
                 .toolbar {
                     if session.isOpen {
+                        ToolbarItem(placement: .primaryAction) {
+                            Menu {
+                                Button("Expand All") { collapsedRaw = "" }
+                                Button("Collapse All") {
+                                    collapsedRaw = branchGuids(session.accounts)
+                                        .map(\.rawValue)
+                                        .sorted()
+                                        .joined(separator: ",")
+                                }
+                            } label: {
+                                Image(systemName: "ellipsis.circle")
+                            }
+                            .accessibilityIdentifier("accounts.view")
+                        }
                         ToolbarItem(placement: .primaryAction) {
                             Button {
                                 editor = EditorTarget(account: nil)
@@ -83,6 +117,24 @@ struct AccountsView: View {
         }
     }
 
+    private var collapsed: Set<Guid> {
+        Set(
+            collapsedRaw
+                .split(separator: ",")
+                .compactMap { Guid(String($0)) }
+        )
+    }
+
+    private func toggle(_ guid: Guid) {
+        var next = collapsed
+        if next.contains(guid) {
+            next.remove(guid)
+        } else {
+            next.insert(guid)
+        }
+        collapsedRaw = next.map(\.rawValue).sorted().joined(separator: ",")
+    }
+
     @ViewBuilder
     private var content: some View {
         if !session.isOpen {
@@ -111,13 +163,38 @@ struct AccountsView: View {
         } else {
             List {
                 Section {
-                    ForEach(rows(session.accounts)) { row in
-                        Button {
-                            editor = EditorTarget(account: row.account)
-                        } label: {
-                            AccountLabel(account: row.account, depth: row.depth)
+                    ForEach(rows(session.accounts, collapsed: collapsed)) { row in
+                        HStack(spacing: 4) {
+                            if row.account.children.isEmpty {
+                                Color.clear.frame(width: 28, height: 1)
+                            } else {
+                                Button {
+                                    toggle(row.account.guid)
+                                } label: {
+                                    Image(
+                                        systemName: collapsed.contains(row.account.guid)
+                                            ? "chevron.right"
+                                            : "chevron.down"
+                                    )
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 28, height: 32)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(
+                                    collapsed.contains(row.account.guid)
+                                        ? "Expand \(row.account.name)"
+                                        : "Collapse \(row.account.name)"
+                                )
+                            }
+                            Button {
+                                editor = EditorTarget(account: row.account)
+                            } label: {
+                                AccountLabel(account: row.account, depth: row.depth)
+                            }
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                             if row.account.accountType != "ROOT" {
                                 Button(role: .destructive) {
@@ -157,7 +234,7 @@ private struct AccountLabel: View {
     }
 
     private var subtitle: String {
-        var parts = [account.accountType]
+        var parts = [account.accountType.capitalized]
         if account.hidden { parts.append("hidden") }
         if account.placeholder { parts.append("placeholder") }
         if !account.code.isEmpty { parts.append(account.code) }
