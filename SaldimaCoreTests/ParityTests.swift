@@ -42,11 +42,9 @@ struct BookWriterTests {
 
             let store = try BookStore(url: url)
             let roots = try await store.accounts()
-            #expect(roots.count == 1)
-            #expect(roots.first?.name == "Root Account")
-            #expect(roots.first?.accountType == "ROOT")
+            #expect(roots.map(\.name).sorted() == template.roots.map(\.name).sorted())
 
-            let actual = flatten(roots.first?.children ?? [])
+            let actual = flatten(roots)
             let expected = BookTemplates.flatten(template)
             #expect(actual.map(\.0).sorted() == expected.map(\.path).sorted())
 
@@ -191,13 +189,8 @@ struct AccountEditingTests {
                 with: AccountDraft(name: "Assets", type: .asset, parentGuid: bank.guid)
             )
         }
-        await #expect(throws: AccountEditError.protectedAccount) {
-            let root = try #require(roots.first)
-            try await store.updateAccount(
-                root.guid,
-                with: AccountDraft(name: "Renamed", type: .asset)
-            )
-        }
+        // The structural root is not a row, like GnuCash's Accounts window.
+        #expect(find("Root Account", in: roots) == nil)
         await store.close()
     }
 

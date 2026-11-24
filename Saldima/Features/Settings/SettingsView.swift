@@ -13,7 +13,13 @@ struct SettingsView: View {
                     Menu("Create a book from a template") {
                         ForEach(BookTemplates.all) { template in
                             Button(template.name) {
-                                Task { await session.createBook(from: template) }
+                                Task {
+                                    await session.createBook(
+                                        named: template.name,
+                                        template: template,
+                                        currency: .usd
+                                    )
+                                }
                             }
                         }
                     }

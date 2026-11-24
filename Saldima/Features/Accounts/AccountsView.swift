@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import SwiftUI
+import UniformTypeIdentifiers
 
 import SaldimaCore
 
@@ -56,14 +57,21 @@ private func descendants(of guid: Guid, in accounts: [Account]) -> Set<Guid> {
 
 struct AccountsView: View {
     let session: BookSession
-    @State private var editor: EditorTarget?
-    @State private var template: BookTemplate = BookTemplates.personal
+    @State private var sheet: SheetTarget?
+    @State private var showImporter = false
     /// GnuCash remembers which branches are folded; so do we, per device.
     @AppStorage("saldima.collapsedAccounts") private var collapsedRaw = ""
 
-    private struct EditorTarget: Identifiable {
-        let account: Account?
-        var id: String { account?.guid.rawValue ?? "new" }
+    private enum SheetTarget: Identifiable {
+        case newBook
+        case account(Account?)
+
+        var id: String {
+            switch self {
+            case .newBook: "new-book"
+            case .account(let account): account?.guid.rawValue ?? "new-account"
+            }
+        }
     }
 
     var body: some View {
@@ -71,6 +79,38 @@ struct AccountsView: View {
             content
                 .navigationTitle("Accounts")
                 .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Menu {
+                            ForEach(session.books, id: \.absoluteString) { url in
+                                Button {
+                                    Task { try? await session.open(url: url) }
+                                } label: {
+                                    Label(
+                                        url.lastPathComponent,
+                                        systemImage: url == session.bookURL
+                                            ? "checkmark.circle.fill"
+                                            : "building.2"
+                                    )
+                                }
+                            }
+                            Divider()
+                            Button {
+                                sheet = .newBook
+                            } label: {
+                                Label("New book\u{2026}", systemImage: "plus.rectangle.on.folder")
+                            }
+                            Button {
+                                showImporter = true
+                            } label: {
+                                Label("Import book\u{2026}", systemImage: "square.and.arrow.down")
+                            }
+                        } label: {
+                            Label(session.bookName, systemImage: "building.2")
+                                .labelStyle(.titleAndIcon)
+                        }
+                        .accessibilityIdentifier("books.menu")
+                    }
+
                     if session.isOpen {
                         ToolbarItem(placement: .primaryAction) {
                             Menu {
@@ -88,7 +128,7 @@ struct AccountsView: View {
                         }
                         ToolbarItem(placement: .primaryAction) {
                             Button {
-                                editor = EditorTarget(account: nil)
+                                sheet = .account(nil)
                             } label: {
                                 Label("Add account", systemImage: "plus")
                             }
@@ -96,12 +136,26 @@ struct AccountsView: View {
                         }
                     }
                 }
-                .sheet(item: $editor) { target in
-                    AccountEditor(
-                        session: session,
-                        editing: target.account,
-                        accounts: session.accounts
-                    )
+                .fileImporter(
+                    isPresented: $showImporter,
+                    allowedContentTypes: [.data],
+                    allowsMultipleSelection: false
+                ) { result in
+                    if case .success(let urls) = result, let url = urls.first {
+                        Task { await session.importBook(from: url) }
+                    }
+                }
+                .sheet(item: $sheet) { target in
+                    switch target {
+                    case .newBook:
+                        NewBookSheet(session: session)
+                    case .account(let account):
+                        AccountEditor(
+                            session: session,
+                            editing: account,
+                            accounts: session.accounts
+                        )
+                    }
                 }
                 .alert(
                     "Saldima",
@@ -143,16 +197,8 @@ struct AccountsView: View {
             } description: {
                 Text("Create a book to start. It lives on this device and works with no account or network.")
             } actions: {
-                Picker("Template", selection: $template) {
-                    ForEach(BookTemplates.all) { option in
-                        Text(option.name).tag(option)
-                    }
-                }
-                .pickerStyle(.menu)
-                Button("Create book") {
-                    Task { await session.createBook(from: template) }
-                }
-                .buttonStyle(.borderedProminent)
+                Button("New book\u{2026}") { sheet = .newBook }
+                    .buttonStyle(.borderedProminent)
             }
         } else if session.accounts.isEmpty {
             ContentUnavailableView(
@@ -189,9 +235,13 @@ struct AccountsView: View {
                                 )
                             }
                             Button {
-                                editor = EditorTarget(account: row.account)
+                                sheet = .account(row.account)
                             } label: {
-                                AccountLabel(account: row.account, depth: row.depth)
+                                AccountLabel(
+                                    account: row.account,
+                                    depth: row.depth,
+                                    balance: session.balances[row.account.guid].map(session.formatted)
+                                )
                             }
                             .buttonStyle(.plain)
                         }
@@ -206,7 +256,11 @@ struct AccountsView: View {
                         }
                     }
                 } footer: {
-                    Text(session.bookName)
+                    VStack(alignment: .leading, spacing: 4) {
+                        LabeledContent("Net assets", value: session.formatted(session.netAssets))
+                        LabeledContent("Profit", value: session.formatted(session.profit))
+                        Text(session.bookName)
+                    }
                 }
             }
         }
@@ -216,6 +270,7 @@ struct AccountsView: View {
 private struct AccountLabel: View {
     let account: Account
     let depth: Int
+    let balance: String?
 
     var body: some View {
         HStack(spacing: 8) {
@@ -226,6 +281,12 @@ private struct AccountLabel: View {
                     .font(account.accountType == "ROOT" ? .headline : .body)
                 Text(subtitle)
                     .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            if let balance, account.accountType != "ROOT" {
+                Text(balance)
+                    .font(.callout.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
         }
@@ -361,4 +422,60 @@ private struct AccountEditor: View {
 
 #Preview {
     AccountsView(session: BookSession())
+}
+
+
+private struct NewBookSheet: View {
+    let session: BookSession
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    @State private var template: BookTemplate = BookTemplates.personal
+    @State private var currency: BookCurrency = .usd
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("Company name", text: $name)
+                        .accessibilityIdentifier("newbook.name")
+                    Picker("Template", selection: $template) {
+                        ForEach(BookTemplates.all) { option in
+                            Text(option.name).tag(option)
+                        }
+                    }
+                    Picker("Currency", selection: $currency) {
+                        Text("USD").tag(BookCurrency.usd)
+                        Text("EUR").tag(BookCurrency.eur)
+                        Text("GBP").tag(BookCurrency.gbp)
+                    }
+                } footer: {
+                    Text(template.description)
+                }
+            }
+            .navigationTitle("New book")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Create") {
+                        let chosen = name
+                        let chosenTemplate = template
+                        let chosenCurrency = currency
+                        Task {
+                            await session.createBook(
+                                named: chosen,
+                                template: chosenTemplate,
+                                currency: chosenCurrency
+                            )
+                            dismiss()
+                        }
+                    }
+                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+        }
+    }
 }
