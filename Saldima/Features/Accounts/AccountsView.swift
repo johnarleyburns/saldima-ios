@@ -264,7 +264,7 @@ struct AccountsView: View {
                                 AccountLabel(
                                     account: row.account,
                                     depth: row.depth,
-                                    balance: session.balances[row.account.guid].map(session.formatted)
+                                    balance: session.totals[row.account.guid].map(session.formatted)
                                 )
                             }
                             .buttonStyle(.plain)

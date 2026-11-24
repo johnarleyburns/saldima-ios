@@ -246,3 +246,28 @@ struct LedgerVerifyTests {
         #expect(findings.first?.message == "trial balance debits do not equal credits")
     }
 }
+
+@Suite("Account rollups")
+struct AccountRollupTests {
+    @Test("parents total their own and descendant balances")
+    func rollups() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rollup-\(UUID().uuidString).gnucash")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try BookWriter.create(at: url, template: BookTemplates.personal, ids: SeededIDGenerator())
+        let store = try BookStore(url: url)
+        let roots = try await store.accounts()
+        let checking = find("Checking", in: roots)
+        let bank = find("Bank", in: roots)
+        let assets = find("Assets", in: roots)
+        #expect(checking != nil)
+        let balances: [Guid: Money] = [
+            try #require(checking?.guid): try Money(num: 1_000, denom: 1),
+        ]
+        let totals = try AccountRollup.totals(roots, balances: balances)
+        #expect(totals[try #require(checking?.guid)] == (try Money(num: 1_000, denom: 1)))
+        #expect(totals[try #require(bank?.guid)] == (try Money(num: 1_000, denom: 1)))
+        #expect(totals[try #require(assets?.guid)] == (try Money(num: 1_000, denom: 1)))
+        await store.close()
+    }
+}
