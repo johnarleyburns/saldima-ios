@@ -73,6 +73,11 @@ public struct AccountDraft: Sendable, Hashable {
 public struct StoredSplit: Sendable, Hashable {
     public let accountGuid: Guid
     public let value: Money
+
+    public init(accountGuid: Guid, value: Money) {
+        self.accountGuid = accountGuid
+        self.value = value
+    }
 }
 
 public struct StoredTransaction: Sendable, Hashable, Identifiable {
@@ -82,6 +87,13 @@ public struct StoredTransaction: Sendable, Hashable, Identifiable {
     public let splits: [StoredSplit]
 
     public var id: Guid { guid }
+
+    public init(guid: Guid, date: String, description: String, splits: [StoredSplit]) {
+        self.guid = guid
+        self.date = date
+        self.description = description
+        self.splits = splits
+    }
 }
 
 public enum JournalError: Error, Equatable, Sendable {
