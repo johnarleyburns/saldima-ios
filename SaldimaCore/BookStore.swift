@@ -517,6 +517,28 @@ public actor BookStore {
         }
     }
 
+    private func bookGuid(_ database: OpaquePointer) throws -> Guid? {
+        guard try tableExists(database, "books") else { return nil }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            database,
+            "SELECT guid FROM books LIMIT 1;",
+            -1,
+            &statement,
+            nil
+        ) == SQLITE_OK else {
+            throw BookStoreError.sqlite(String(cString: sqlite3_errmsg(database)))
+        }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW,
+              let text = Self.text(statement, 0),
+              let guid = Guid(text)
+        else {
+            return nil
+        }
+        return guid
+    }
+
     private func bookRootGuid(_ database: OpaquePointer) throws -> Guid? {
         guard try tableExists(database, "books") else { return nil }
         var statement: OpaquePointer?
@@ -670,6 +692,63 @@ public actor BookStore {
         }
         try run(database, "DELETE FROM splits WHERE tx_guid = ?;", [guid.rawValue])
         try run(database, "DELETE FROM transactions WHERE guid = ?;", [guid.rawValue])
+    }
+
+    /// A full snapshot for XML export, including the structural ROOT account
+    /// that the account tree deliberately hides.
+    public func exportSnapshot() throws -> BookSnapshot {
+        guard let database else { throw BookStoreError.cannotOpen }
+        guard let bookGuid = try bookGuid(database) else {
+            throw BookStoreError.missingSchema
+        }
+        let currency = try bookCurrency() ?? .usd
+        var flat: [Account] = []
+        func walk(_ nodes: [Account]) {
+            for node in nodes {
+                flat.append(node)
+                walk(node.children)
+            }
+        }
+        walk(try accounts())
+        if let rootGuid = try bookRootGuid(database),
+           !flat.contains(where: { $0.guid == rootGuid }),
+           let root = try account(rootGuid)
+        {
+            // GnuCash resolves parents while reading, so the structural root
+            // must appear before its children.
+            flat.insert(root, at: 0)
+        }
+        let snapshotAccounts = flat.map { node in
+            SnapshotAccount(
+                guid: node.guid,
+                name: node.name,
+                type: node.accountType,
+                parentGuid: node.parentGuid,
+                commodityCode: node.accountType == "ROOT" ? nil : currency.code,
+                code: node.code,
+                description: node.description,
+                hidden: node.hidden,
+                placeholder: node.placeholder
+            )
+        }
+        let snapshotTransactions = try transactions().map { transaction in
+            SnapshotTransaction(
+                guid: transaction.guid,
+                date: String(transaction.date.prefix(10)),
+                description: transaction.description,
+                currencyCode: currency.code,
+                splits: transaction.splits.map {
+                    SnapshotSplit(accountGuid: $0.accountGuid, value: $0.value)
+                }
+            )
+        }
+        return BookSnapshot(
+            bookGuid: bookGuid,
+            currencyCode: currency.code,
+            fraction: currency.fraction,
+            accounts: snapshotAccounts,
+            transactions: snapshotTransactions
+        )
     }
 
     /// Sums each account's split value (the book currency amount).

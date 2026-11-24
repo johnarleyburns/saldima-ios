@@ -16,6 +16,8 @@ public struct SnapshotAccount: Sendable, Hashable {
     public let commodityCode: String?
     public let code: String
     public let description: String
+    public let hidden: Bool
+    public let placeholder: Bool
 
     public init(
         guid: Guid,
@@ -24,7 +26,9 @@ public struct SnapshotAccount: Sendable, Hashable {
         parentGuid: Guid? = nil,
         commodityCode: String? = nil,
         code: String = "",
-        description: String = ""
+        description: String = "",
+        hidden: Bool = false,
+        placeholder: Bool = false
     ) {
         self.guid = guid
         self.name = name
@@ -33,6 +37,8 @@ public struct SnapshotAccount: Sendable, Hashable {
         self.commodityCode = commodityCode
         self.code = code
         self.description = description
+        self.hidden = hidden
+        self.placeholder = placeholder
     }
 }
 
@@ -118,6 +124,7 @@ private final class SnapshotDelegate: NSObject, XMLParserDelegate {
     private var account: AccountBuilder?
     private var transaction: TransactionBuilder?
     private var split: SplitBuilder?
+    private var slotKey: String?
 
     private struct AccountBuilder {
         var guid: Guid?
@@ -127,6 +134,8 @@ private final class SnapshotDelegate: NSObject, XMLParserDelegate {
         var commodity: String?
         var code = ""
         var description = ""
+        var hidden = false
+        var placeholder = false
     }
 
     private struct SplitBuilder {
@@ -173,12 +182,14 @@ private final class SnapshotDelegate: NSObject, XMLParserDelegate {
         switch (local(elementName), elementName) {
         case ("account", "gnc:account"):
             account = AccountBuilder()
+            slotKey = nil
         case ("transaction", "gnc:transaction"):
             transaction = TransactionBuilder()
         case ("split", "trn:split") where transaction != nil:
             split = SplitBuilder()
         case ("account", _) where parent == "book":
             account = AccountBuilder()
+            slotKey = nil
         case ("transaction", _) where parent == "book":
             transaction = TransactionBuilder()
         case ("split", _) where parent == "splits" && transaction != nil:
@@ -250,6 +261,15 @@ private final class SnapshotDelegate: NSObject, XMLParserDelegate {
                 account?.code = value
             case ("description", "account"):
                 account?.description = value
+            case ("key", "slot"):
+                slotKey = value
+            case ("value", "slot"):
+                if slotKey == "placeholder" {
+                    account?.placeholder = value == "true"
+                } else if slotKey == "hidden" {
+                    account?.hidden = value == "true"
+                }
+                slotKey = nil
             default:
                 break
             }
@@ -268,7 +288,9 @@ private final class SnapshotDelegate: NSObject, XMLParserDelegate {
                     parentGuid: builder.parent,
                     commodityCode: builder.commodity,
                     code: builder.code,
-                    description: builder.description
+                    description: builder.description,
+                    hidden: builder.hidden,
+                    placeholder: builder.placeholder
                 )
             )
         }

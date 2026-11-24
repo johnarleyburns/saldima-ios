@@ -92,6 +92,51 @@ enum Gzip {
         return output
     }
 
+    /// Writes a gzip stream, as GnuCash expects for `.gnucash` XML files.
+    static func deflate(_ data: Data) throws -> Data {
+        var stream = z_stream()
+        guard deflateInit2_(
+            &stream,
+            Z_DEFAULT_COMPRESSION,
+            Z_DEFLATED,
+            15 + 16,
+            8,
+            Z_DEFAULT_STRATEGY,
+            ZLIB_VERSION,
+            Int32(MemoryLayout<z_stream>.size)
+        ) == Z_OK else {
+            throw BookFormatError.unreadable
+        }
+        defer { deflateEnd(&stream) }
+
+        let bufferSize = 64 * 1024
+        var buffer = [UInt8](repeating: 0, count: bufferSize)
+        var output = Data()
+        var status: Int32 = Z_OK
+        try data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            guard let base = raw.bindMemory(to: Bytef.self).baseAddress else {
+                throw BookFormatError.unreadable
+            }
+            stream.next_in = UnsafeMutablePointer(mutating: base)
+            stream.avail_in = uInt(min(raw.count, Int(UInt32.max)))
+            repeat {
+                let capacity = bufferSize
+                let written: Int = buffer.withUnsafeMutableBytes { out in
+                    stream.next_out = out.bindMemory(to: Bytef.self).baseAddress
+                    stream.avail_out = uInt(capacity)
+                    status = CZlib.deflate(&stream, Z_FINISH)
+                    return capacity - Int(stream.avail_out)
+                }
+                if written > 0 {
+                    output.append(contentsOf: buffer[0..<written])
+                }
+                if status == Z_STREAM_END { break }
+                guard status == Z_OK else { throw BookFormatError.unreadable }
+            } while true
+        }
+        return output
+    }
+
     /// Inflates just enough to sniff the payload.
     static func inflatePrefix(_ data: Data, limit: Int) throws -> Data {
         var stream = z_stream()

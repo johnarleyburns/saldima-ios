@@ -26,7 +26,8 @@ and removable.
       templates (verified by opening and re-saving it with GnuCash 5.14);
       `BookStore` creates/updates/moves/deletes accounts with the web's rules;
       Accounts UI and Settings template picker are wired. Files/iCloud import and
-      export remain.
+      a gzip GnuCash XML export from Settings are landed; Quick Look and a
+      SQLite export remain.
 - [ ] [#22 M3 Optional Saldima sync](https://github.com/johnarleyburns/saldima-ios/issues/22):
       `/api/v1`, Keychain device token, download/upload/merge, no network in
       standalone.
@@ -37,7 +38,8 @@ and removable.
 - Web↔mobile matrix and gate: `saldima/docs/plans/mobile-parity.md`.
 - Next phase: `saldima/docs/plans/P2.md` — both GnuCash formats, 100 industry
   templates with country overlays, and GnuCash's locale set with AI translations
-  marked until reviewed. iOS reads XML and SQLite now; XML writing is next.
+  marked until reviewed. iOS reads both formats and writes SQLite and gzip XML
+  now.
 
 ## Exit
 

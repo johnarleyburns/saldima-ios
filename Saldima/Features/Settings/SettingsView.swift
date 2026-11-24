@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import Foundation
 import SwiftUI
+import UniformTypeIdentifiers
 import SaldimaCore
 
 struct SettingsView: View {
     let session: BookSession
     @AppStorage(ThemeKeys.accent) private var accentRaw = AccentChoice.indigo.rawValue
     @AppStorage(ThemeKeys.appearance) private var appearanceRaw = AppearanceChoice.system.rawValue
+    @State private var exportDocument: XMLExportDocument?
+    @State private var exporting = false
+    @State private var exportFilename = "Saldima-xml.gnucash"
 
     var body: some View {
         NavigationStack {
@@ -43,6 +48,17 @@ struct SettingsView: View {
                 }
                 Section("Book") {
                     LabeledContent("Open book", value: session.bookName)
+                    Button {
+                        Task {
+                            guard let result = await session.exportXML() else { return }
+                            exportDocument = XMLExportDocument(data: result.data)
+                            exportFilename = result.filename
+                            exporting = true
+                        }
+                    } label: {
+                        Label("Export as GnuCash XML", systemImage: "square.and.arrow.up")
+                    }
+                    .disabled(!session.isOpen)
                     Menu("Create a book from a template") {
                         ForEach(BookTemplates.all) { template in
                             Button(template.name) {
@@ -73,7 +89,48 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("Settings")
+            .fileExporter(
+                isPresented: $exporting,
+                document: exportDocument,
+                contentType: XMLExportDocument.contentType,
+                defaultFilename: exportFilename
+            ) { _ in
+                exportDocument = nil
+            }
+            .alert(
+                "Saldima",
+                isPresented: Binding(
+                    get: { session.lastError != nil },
+                    set: { if !$0 { session.clearError() } }
+                )
+            ) {
+                Button("OK", role: .cancel) { session.clearError() }
+            } message: {
+                Text(session.lastError ?? "")
+            }
         }
+    }
+}
+
+/// Carries a finished gzip XML export to the system document picker.
+struct XMLExportDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [contentType] }
+    static var contentType: UTType {
+        UTType(filenameExtension: "gnucash") ?? .data
+    }
+
+    let data: Data
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        data = configuration.file.regularFileContents ?? Data()
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
     }
 }
 
