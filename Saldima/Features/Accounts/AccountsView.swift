@@ -59,6 +59,7 @@ struct AccountsView: View {
     let session: BookSession
     @State private var sheet: SheetTarget?
     @State private var showImporter = false
+    @AppStorage(ThemeKeys.accent) private var accentRaw = AccentChoice.indigo.rawValue
     /// GnuCash remembers which branches are folded; so do we, per device.
     @AppStorage("saldima.collapsedAccounts") private var collapsedRaw = ""
 
@@ -171,6 +172,10 @@ struct AccountsView: View {
         }
     }
 
+    private var accent: AccentChoice {
+        AccentChoice(rawValue: accentRaw) ?? .indigo
+    }
+
     private var collapsed: Set<Guid> {
         Set(
             collapsedRaw
@@ -213,11 +218,13 @@ struct AccountsView: View {
                         HStack(spacing: 12) {
                             SummaryCard(
                                 title: "Net assets",
-                                value: session.formatted(session.netAssets)
+                                value: session.formatted(session.netAssets),
+                                tint: accent.color
                             )
                             SummaryCard(
                                 title: "Profit",
-                                value: session.formatted(session.profit)
+                                value: session.formatted(session.profit),
+                                tint: session.profit.num < 0 ? .red : .green
                             )
                         }
                     }
@@ -283,20 +290,34 @@ struct AccountsView: View {
 private struct SummaryCard: View {
     let title: String
     let value: String
+    let tint: Color
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.white.opacity(0.85))
             Text(value)
                 .font(.title3.monospacedDigit().weight(.semibold))
+                .foregroundStyle(.white)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
-        .glassEffect(.regular, in: .rect(cornerRadius: 18))
+        .background(
+            LinearGradient(
+                colors: [tint, tint.opacity(0.72)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ),
+            in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(.white.opacity(0.18), lineWidth: 1)
+        )
+        .shadow(color: tint.opacity(0.25), radius: 10, y: 4)
     }
 }
 
@@ -308,7 +329,7 @@ private struct AccountLabel: View {
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: account.placeholder ? "folder" : "doc.text")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(accountColor(account.accountType))
             VStack(alignment: .leading, spacing: 2) {
                 Text(account.name)
                     .font(account.accountType == "ROOT" ? .headline : .body)
