@@ -1,12 +1,165 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import SwiftUI
 
+import SaldimaCore
+
 struct RegisterView: View {
+    let session: BookSession
+    @State private var composing = false
+
     var body: some View {
-        EmptyFeatureView(
-            title: "Register",
-            message: "Choose an account to see its transactions.",
-            systemImage: "list.bullet.rectangle"
-        )
+        NavigationStack {
+            Group {
+                if session.transactions.isEmpty {
+                    ContentUnavailableView {
+                        Label("No transactions", systemImage: "list.bullet.rectangle")
+                    } description: {
+                        Text("Post a journal entry to start the register.")
+                    } actions: {
+                        Button("New transaction") { composing = true }
+                            .buttonStyle(.glassProminent)
+                            .disabled(!session.isOpen)
+                    }
+                } else {
+                    List {
+                        ForEach(session.transactions) { transaction in
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack {
+                                    Text(transaction.description)
+                                        .font(.headline)
+                                    Spacer()
+                                    Text(String(transaction.date.prefix(10)))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                ForEach(transaction.splits, id: \.self) { split in
+                                    HStack {
+                                        Text(name(of: split.accountGuid))
+                                            .font(.subheadline)
+                                        Spacer()
+                                        Text(session.formatted(split.value))
+                                            .font(.subheadline.monospacedDigit())
+                                    }
+                                    .foregroundStyle(.secondary)
+                                }
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Register")
+            .toolbar {
+                if session.isOpen {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button {
+                            composing = true
+                        } label: {
+                            Label("New transaction", systemImage: "plus")
+                        }
+                        .accessibilityIdentifier("register.add")
+                    }
+                }
+            }
+            .sheet(isPresented: $composing) {
+                NewTransactionSheet(session: session)
+            }
+        }
     }
+
+    private func name(of guid: Guid) -> String {
+        session.accountOptions().first { $0.guid == guid }?.name ?? "Account"
+    }
+}
+
+private struct NewTransactionSheet: View {
+    let session: BookSession
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var date = Date()
+    @State private var description = ""
+    @State private var from: Guid?
+    @State private var to: Guid?
+    @State private var amount = ""
+    @State private var localError: String?
+
+    private var options: [(guid: Guid, name: String, depth: Int)] {
+        session.accountOptions()
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    DatePicker("Date", selection: $date, displayedComponents: .date)
+                    TextField("Description", text: $description)
+                        .accessibilityIdentifier("transaction.description")
+                }
+                Section {
+                    Picker("From", selection: $from) {
+                        Text("Choose").tag(Guid?.none)
+                        ForEach(options, id: \.guid) { option in
+                            Text(option.name).tag(Guid?.some(option.guid))
+                        }
+                    }
+                    Picker("To", selection: $to) {
+                        Text("Choose").tag(Guid?.none)
+                        ForEach(options, id: \.guid) { option in
+                            Text(option.name).tag(Guid?.some(option.guid))
+                        }
+                    }
+                    TextField("Amount", text: $amount)
+                        .keyboardType(.decimalPad)
+                        .accessibilityIdentifier("transaction.amount")
+                }
+                if let localError {
+                    Text(localError).foregroundStyle(.red).font(.footnote)
+                }
+            }
+            .navigationTitle("New transaction")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Post") { post() }
+                        .buttonStyle(.glassProminent)
+                }
+            }
+        }
+    }
+
+    private func post() {
+        guard let from, let to, from != to else {
+            localError = "Choose two different accounts."
+            return
+        }
+        let trimmed = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            localError = "Enter a description."
+            return
+        }
+        guard let value = try? Money.parseHalfUp(amount, fraction: 100), value != .zero else {
+            localError = "Enter an amount like 12.34."
+            return
+        }
+        Task {
+            if await session.post(
+                date: date,
+                description: trimmed,
+                from: from,
+                to: to,
+                amount: value
+            ) {
+                dismiss()
+            } else {
+                localError = session.lastError
+            }
+        }
+    }
+}
+
+#Preview {
+    RegisterView(session: BookSession())
 }

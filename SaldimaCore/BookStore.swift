@@ -70,6 +70,28 @@ public struct AccountDraft: Sendable, Hashable {
     }
 }
 
+public struct StoredSplit: Sendable, Hashable {
+    public let accountGuid: Guid
+    public let value: Money
+}
+
+public struct StoredTransaction: Sendable, Hashable, Identifiable {
+    public let guid: Guid
+    public let date: String
+    public let description: String
+    public let splits: [StoredSplit]
+
+    public var id: Guid { guid }
+}
+
+public enum JournalError: Error, Equatable, Sendable {
+    case invalidDate
+    case tooFewSplits
+    case unknownAccount(Guid)
+    case unbalanced
+    case alreadyPosted(Guid)
+}
+
 public enum AccountEditError: Error, Equatable, Sendable {
     case invalidName
     case invalidType
@@ -500,6 +522,144 @@ public actor BookStore {
         return guid
     }
 
+    /// Every transaction in the book, newest first.
+    public func transactions() throws -> [StoredTransaction] {
+        guard let database else { throw BookStoreError.cannotOpen }
+        guard try tableExists(database, "transactions"), try tableExists(database, "splits") else {
+            return []
+        }
+        var statement: OpaquePointer?
+        let sql = """
+            SELECT t.guid, t.post_date, t.description, s.account_guid,
+                   s.value_num, s.value_denom
+            FROM transactions t
+            JOIN splits s ON s.tx_guid = t.guid
+            ORDER BY t.post_date DESC, t.guid, s.guid;
+            """
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw BookStoreError.sqlite(String(cString: sqlite3_errmsg(database)))
+        }
+        defer { sqlite3_finalize(statement) }
+        var order: [Guid] = []
+        var headers: [Guid: (date: String, description: String)] = [:]
+        var rows: [Guid: [StoredSplit]] = [:]
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let guidText = Self.text(statement, 0), let guid = Guid(guidText),
+                  let date = Self.text(statement, 1),
+                  let description = Self.text(statement, 2),
+                  let accountText = Self.text(statement, 3),
+                  let account = Guid(accountText)
+            else {
+                throw BookStoreError.corruptData
+            }
+            if headers[guid] == nil {
+                order.append(guid)
+                headers[guid] = (date, description)
+            }
+            rows[guid, default: []].append(
+                StoredSplit(
+                    accountGuid: account,
+                    value: try Money(
+                        num: sqlite3_column_int64(statement, 4),
+                        denom: sqlite3_column_int64(statement, 5)
+                    )
+                )
+            )
+        }
+        return order.compactMap { guid in
+            guard let header = headers[guid] else { return nil }
+            return StoredTransaction(
+                guid: guid,
+                date: header.date,
+                description: header.description,
+                splits: rows[guid] ?? []
+            )
+        }
+    }
+
+    /// Posts a balanced journal entry into the GnuCash tables.
+    @discardableResult
+    public func post(
+        date: String,
+        description: String,
+        splits: [StoredSplit],
+        ids: any IDGenerator
+    ) throws -> Guid {
+        guard let database else { throw BookStoreError.cannotOpen }
+        guard Self.isDate(date) else { throw JournalError.invalidDate }
+        guard splits.count >= 2 else { throw JournalError.tooFewSplits }
+        var known: Set<Guid> = []
+        do {
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(database, "SELECT guid FROM accounts;", -1, &statement, nil) == SQLITE_OK else {
+                throw BookStoreError.sqlite(String(cString: sqlite3_errmsg(database)))
+            }
+            defer { sqlite3_finalize(statement) }
+            while sqlite3_step(statement) == SQLITE_ROW {
+                if let text = Self.text(statement, 0), let guid = Guid(text) {
+                    known.insert(guid)
+                }
+            }
+        }
+        var total = Money.zero
+        for split in splits {
+            guard known.contains(split.accountGuid) else {
+                throw JournalError.unknownAccount(split.accountGuid)
+            }
+            total = try Money.add(total, split.value)
+        }
+        guard total == .zero else { throw JournalError.unbalanced }
+
+        let txGuid = ids.guid()
+        let currency = try bookCurrencyGuid()
+
+        try run(
+            database,
+            """
+            INSERT INTO transactions(guid, currency_guid, num, post_date,
+                                     enter_date, description)
+            VALUES (?, ?, '', ?, ?, ?);
+            """,
+            [
+                txGuid.rawValue,
+                currency.map { $0.rawValue as any SQLiteValue } ?? SQLiteNull(),
+                "\(date) 00:00:00",
+                "\(date) 00:00:00",
+                description,
+            ]
+        )
+        for split in splits {
+            try run(
+                database,
+                """
+                INSERT INTO splits(guid, tx_guid, account_guid, memo, action,
+                                   reconcile_state, reconcile_date, value_num,
+                                   value_denom, quantity_num, quantity_denom, lot_guid)
+                VALUES (?, ?, ?, '', '', 'n', NULL, ?, ?, ?, ?, NULL);
+                """,
+                [
+                    ids.guid().rawValue,
+                    txGuid.rawValue,
+                    split.accountGuid.rawValue,
+                    split.value.num,
+                    split.value.denom,
+                    split.value.num,
+                    split.value.denom,
+                ]
+            )
+        }
+        return txGuid
+    }
+
+    public func deleteTransaction(_ guid: Guid) throws {
+        guard let database else { throw BookStoreError.cannotOpen }
+        guard try tableExists(database, "transactions"), try tableExists(database, "splits") else {
+            throw BookStoreError.missingSchema
+        }
+        try run(database, "DELETE FROM splits WHERE tx_guid = ?;", [guid.rawValue])
+        try run(database, "DELETE FROM transactions WHERE guid = ?;", [guid.rawValue])
+    }
+
     /// Sums each account's split value (the book currency amount).
     public func balances() throws -> [Guid: Money] {
         guard let database else { throw BookStoreError.cannotOpen }
@@ -557,6 +717,48 @@ public actor BookStore {
             }
         }
         return names
+    }
+
+    private func run(
+        _ database: OpaquePointer,
+        _ sql: String,
+        _ values: [any SQLiteValue]
+    ) throws {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw BookStoreError.sqlite(String(cString: sqlite3_errmsg(database)))
+        }
+        defer { sqlite3_finalize(statement) }
+        for (offset, value) in values.enumerated() {
+            let index = Int32(offset + 1)
+            switch value {
+            case let text as String:
+                guard sqlite3_bind_text(statement, index, text, -1, Self.transient) == SQLITE_OK else {
+                    throw BookStoreError.sqlite(String(cString: sqlite3_errmsg(database)))
+                }
+            case let number as Int64:
+                guard sqlite3_bind_int64(statement, index, number) == SQLITE_OK else {
+                    throw BookStoreError.sqlite(String(cString: sqlite3_errmsg(database)))
+                }
+            case let number as Int:
+                guard sqlite3_bind_int64(statement, index, Int64(number)) == SQLITE_OK else {
+                    throw BookStoreError.sqlite(String(cString: sqlite3_errmsg(database)))
+                }
+            default:
+                sqlite3_bind_null(statement, index)
+            }
+        }
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw BookStoreError.sqlite(String(cString: sqlite3_errmsg(database)))
+        }
+    }
+
+    private static func isDate(_ value: String) -> Bool {
+        guard value.count == 10 else { return false }
+        let pieces = value.split(separator: "-")
+        return pieces.count == 3
+            && pieces[0].count == 4 && pieces[1].count == 2 && pieces[2].count == 2
+            && pieces.allSatisfy { $0.allSatisfy(\.isNumber) }
     }
 
     private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)

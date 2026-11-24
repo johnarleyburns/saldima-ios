@@ -14,6 +14,7 @@ final class BookSession {
     private(set) var bookURL: URL?
     private(set) var books: [URL] = []
     private(set) var accounts: [Account] = []
+    private(set) var transactions: [StoredTransaction] = []
     private(set) var balances: [Guid: Money] = [:]
     private(set) var netAssets: Money = .zero
     private(set) var profit: Money = .zero
@@ -142,6 +143,51 @@ final class BookSession {
         (try? value.formatted(fraction: fraction)) ?? "—"
     }
 
+    @discardableResult
+    func post(
+        date: Date,
+        description: String,
+        from: Guid,
+        to: Guid,
+        amount: Money
+    ) async -> Bool {
+        guard let store else { return false }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        do {
+            try await store.post(
+                date: formatter.string(from: date),
+                description: description,
+                splits: [
+                    StoredSplit(accountGuid: from, value: amount),
+                    StoredSplit(
+                        accountGuid: to,
+                        value: try Money(num: -amount.num, denom: amount.denom)
+                    ),
+                ],
+                ids: ids
+            )
+            try await refresh()
+            return true
+        } catch {
+            lastError = Self.message(for: error)
+            return false
+        }
+    }
+
+    func accountOptions() -> [(guid: Guid, name: String, depth: Int)] {
+        func walk(_ nodes: [Account], depth: Int, into rows: inout [(Guid, String, Int)]) {
+            for node in nodes where node.accountType != "ROOT" && !node.placeholder {
+                rows.append((node.guid, node.name, depth))
+                walk(node.children, depth: depth + 1, into: &rows)
+            }
+        }
+        var rows: [(Guid, String, Int)] = []
+        walk(accounts, depth: 0, into: &rows)
+        return rows
+    }
+
     func clearError() {
         lastError = nil
     }
@@ -150,6 +196,7 @@ final class BookSession {
         guard let store else { return }
         accounts = try await store.accounts()
         balances = try await store.balances()
+        transactions = try await store.transactions()
         if let currency = try await store.bookCurrency() {
             fraction = currency.fraction
         }

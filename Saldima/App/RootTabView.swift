@@ -20,7 +20,7 @@ struct RootTabView: View {
                 AccountsView(session: session)
             }
             Tab("Register", systemImage: "list.bullet.rectangle") {
-                RegisterView()
+                RegisterView(session: session)
             }
             Tab("Receipts", systemImage: "doc.viewfinder") {
                 ReceiptsView()
