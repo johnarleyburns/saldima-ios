@@ -189,6 +189,13 @@ public actor BookStore {
             }
         }
 
+        // Like the desktop Accounts window, the book root is not a row: its
+        // children are the top level.
+        if let bookRoot = try bookRootGuid(database), flat[bookRoot] != nil {
+            let promoted = childGuids[bookRoot] ?? []
+            roots = roots.filter { $0 != bookRoot } + promoted
+        }
+
         func tree(_ guid: Guid, depth: Int) throws -> Account {
             guard depth <= flat.count, var account = flat[guid] else {
                 throw BookStoreError.corruptData
@@ -474,6 +481,47 @@ public actor BookStore {
         guard sqlite3_bind_text(statement, index, value, -1, Self.transient) == SQLITE_OK else {
             throw BookStoreError.sqlite(String(cString: sqlite3_errmsg(database)))
         }
+    }
+
+    private func bookRootGuid(_ database: OpaquePointer) throws -> Guid? {
+        guard try tableExists(database, "books") else { return nil }
+        var statement: OpaquePointer?
+        let sql = "SELECT root_account_guid FROM books LIMIT 1;"
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw BookStoreError.sqlite(String(cString: sqlite3_errmsg(database)))
+        }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW,
+              let text = Self.text(statement, 0),
+              let guid = Guid(text)
+        else {
+            return nil
+        }
+        return guid
+    }
+
+    /// Sums each account's split value (the book currency amount).
+    public func balances() throws -> [Guid: Money] {
+        guard let database else { throw BookStoreError.cannotOpen }
+        guard try tableExists(database, "splits") else { return [:] }
+        var statement: OpaquePointer?
+        let sql = "SELECT account_guid, value_num, value_denom FROM splits;"
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw BookStoreError.sqlite(String(cString: sqlite3_errmsg(database)))
+        }
+        defer { sqlite3_finalize(statement) }
+        var totals: [Guid: Money] = [:]
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let guidText = Self.text(statement, 0), let guid = Guid(guidText) else {
+                throw BookStoreError.corruptData
+            }
+            let value = try Money(
+                num: sqlite3_column_int64(statement, 1),
+                denom: sqlite3_column_int64(statement, 2)
+            )
+            totals[guid] = try Money.add(totals[guid] ?? .zero, value)
+        }
+        return totals
     }
 
     private func templateRootGuid(_ database: OpaquePointer) throws -> Guid? {

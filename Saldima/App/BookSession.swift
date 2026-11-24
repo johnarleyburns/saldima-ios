@@ -4,15 +4,20 @@ import Observation
 
 import SaldimaCore
 
-/// Owns the standalone book on this device. There is no server account: the
-/// file in Documents is the source of truth, and the app opens or creates it
-/// without any network call.
+/// Owns the standalone books on this device. Like GnuCash desktop, there is no
+/// single "root" book: each `.gnucash` file is a company, and the file in
+/// Documents is the source of truth. No network call is ever made.
 @MainActor
 @Observable
 final class BookSession {
     private(set) var store: BookStore?
     private(set) var bookURL: URL?
+    private(set) var books: [URL] = []
     private(set) var accounts: [Account] = []
+    private(set) var balances: [Guid: Money] = [:]
+    private(set) var netAssets: Money = .zero
+    private(set) var profit: Money = .zero
+    private(set) var fraction: Int64 = 100
     private(set) var isLoading = false
     var lastError: String?
 
@@ -25,18 +30,29 @@ final class BookSession {
     var isOpen: Bool { store != nil }
     var bookName: String { bookURL?.lastPathComponent ?? "No book" }
 
-    /// Opens Documents/Saldima.gnucash, creating a personal book on first run.
+    func refreshLibrary() {
+        do {
+            let directory = try Self.documentsDirectory()
+            books = try FileManager.default
+                .contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+                .filter { $0.pathExtension == "gnucash" }
+                .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        } catch {
+            lastError = Self.message(for: error)
+        }
+    }
+
+    /// Opens the first book, or creates a personal one on first run.
     func openDefaultBook() async {
+        refreshLibrary()
         guard store == nil else { return }
         do {
-            let url = try Self.defaultURL()
-            if !FileManager.default.fileExists(atPath: url.path) {
-                try BookWriter.create(
-                    at: url,
-                    template: BookTemplates.personal,
-                    ids: ids
-                )
+            if let first = books.first {
+                try await open(url: first)
+                return
             }
+            let url = try Self.documentsDirectory().appendingPathComponent("Saldima.gnucash")
+            try BookWriter.create(at: url, template: BookTemplates.personal, ids: ids)
             try await open(url: url)
         } catch {
             lastError = Self.message(for: error)
@@ -50,21 +66,43 @@ final class BookSession {
         let opened = try BookStore(url: url)
         store = opened
         bookURL = url
-        accounts = try await opened.accounts()
+        refreshLibrary()
+        try await refresh()
     }
 
-    /// Creates a fresh book from a template next to the current one and opens it.
-    func createBook(from template: BookTemplate) async {
+    /// Creates a company file from a template. Names are unique on disk.
+    func createBook(named name: String, template: BookTemplate, currency: BookCurrency) async {
         do {
             let directory = try Self.documentsDirectory()
+            let base = Self.fileName(from: name)
+            var url = directory.appendingPathComponent("\(base).gnucash")
             var number = 1
-            var url = directory.appendingPathComponent("Saldima \(template.name).gnucash")
             while FileManager.default.fileExists(atPath: url.path) {
                 number += 1
-                url = directory.appendingPathComponent("Saldima \(template.name) \(number).gnucash")
+                url = directory.appendingPathComponent("\(base) \(number).gnucash")
             }
-            try BookWriter.create(at: url, template: template, ids: ids)
+            try BookWriter.create(at: url, template: template, currency: currency, ids: ids)
             try await open(url: url)
+        } catch {
+            lastError = Self.message(for: error)
+        }
+    }
+
+    /// Imports an existing `.gnucash` (XML or SQLite) into this device's library.
+    func importBook(from source: URL) async {
+        let scoped = source.startAccessingSecurityScopedResource()
+        defer { if scoped { source.stopAccessingSecurityScopedResource() } }
+        do {
+            let directory = try Self.documentsDirectory()
+            var destination = directory.appendingPathComponent(source.lastPathComponent)
+            var number = 1
+            while FileManager.default.fileExists(atPath: destination.path) {
+                number += 1
+                let stem = source.deletingPathExtension().lastPathComponent
+                destination = directory.appendingPathComponent("\(stem) \(number).gnucash")
+            }
+            try FileManager.default.copyItem(at: source, to: destination)
+            try await open(url: destination)
         } catch {
             lastError = Self.message(for: error)
         }
@@ -79,7 +117,7 @@ final class BookSession {
             } else {
                 try await store.createAccount(draft, ids: ids)
             }
-            accounts = try await store.accounts()
+            try await refresh()
             return true
         } catch {
             lastError = Self.message(for: error)
@@ -92,7 +130,7 @@ final class BookSession {
         guard let store else { return false }
         do {
             try await store.deleteAccount(account.guid)
-            accounts = try await store.accounts()
+            try await refresh()
             return true
         } catch {
             lastError = Self.message(for: error)
@@ -100,12 +138,55 @@ final class BookSession {
         }
     }
 
+    func formatted(_ value: Money) -> String {
+        (try? value.formatted(fraction: fraction)) ?? "—"
+    }
+
     func clearError() {
         lastError = nil
     }
 
-    private static func defaultURL() throws -> URL {
-        try documentsDirectory().appendingPathComponent("Saldima.gnucash")
+    private func refresh() async throws {
+        guard let store else { return }
+        accounts = try await store.accounts()
+        balances = try await store.balances()
+        if let currency = try await store.bookCurrency() {
+            fraction = currency.fraction
+        }
+        var assets = Money.zero
+        var liabilities = Money.zero
+        var income = Money.zero
+        var expense = Money.zero
+
+        func walk(_ nodes: [Account]) throws {
+            for node in nodes {
+                let balance = balances[node.guid] ?? .zero
+                switch node.accountType {
+                case "ASSET", "BANK", "CASH", "RECEIVABLE":
+                    assets = try Money.add(assets, balance)
+                case "LIABILITY", "CREDIT", "PAYABLE":
+                    liabilities = try Money.add(liabilities, balance)
+                case "INCOME":
+                    income = try Money.add(income, balance)
+                case "EXPENSE":
+                    expense = try Money.add(expense, balance)
+                default:
+                    break
+                }
+                try walk(node.children)
+            }
+        }
+        try walk(accounts)
+        netAssets = try Money.subtract(assets, liabilities)
+        profit = try Money.add(income, expense).negated()
+    }
+
+    private static func fileName(from name: String) -> String {
+        let cleaned = name
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+        return cleaned.isEmpty ? "Saldima" : String(cleaned.prefix(80))
     }
 
     private static func documentsDirectory() throws -> URL {

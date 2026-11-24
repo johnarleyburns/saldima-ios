@@ -81,7 +81,10 @@ struct BookFormatTests {
         }
         walk(stored)
 
-        let xmlRows = snapshot.accounts.map { ($0.name, $0.type) }.sorted { $0.0 < $1.0 }
+        let xmlRows = snapshot.accounts
+            .filter { $0.type != "ROOT" }
+            .map { ($0.name, $0.type) }
+            .sorted { $0.0 < $1.0 }
         let sqliteRows = flat.map { ($0.0, $0.1) }.sorted { $0.0 < $1.0 }
         #expect(xmlRows.map(\.0) == sqliteRows.map(\.0))
         #expect(xmlRows.map(\.1) == sqliteRows.map(\.1))
