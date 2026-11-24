@@ -18,6 +18,7 @@ struct SupporterCard: View {
                     systemImage: isSupporter ? "heart.fill" : "heart"
                 )
             }
+            .buttonStyle(.glass)
             .disabled(isPurchasing)
             .accessibilityIdentifier("settings.supporter")
 

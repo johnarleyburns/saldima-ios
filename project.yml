@@ -42,6 +42,7 @@ targets:
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         SaldimaSourceCommit: "$(SALDIMA_SOURCE_COMMIT)"
         ITSAppUsesNonExemptEncryption: false
+        UIDesignRequiresCompatibility: false
         UILaunchScreen: {}
         UIApplicationSupportsIndirectInputEvents: true
         UISupportedInterfaceOrientations:
