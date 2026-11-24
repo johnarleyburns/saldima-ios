@@ -62,6 +62,9 @@ struct SettingsView: View {
                         AboutView()
                     }
                 }
+                Section("Help") {
+                    NavigationLink("Help topics") { HelpView() }
+                }
                 Section("Support") {
                     SupporterCard()
                 }
