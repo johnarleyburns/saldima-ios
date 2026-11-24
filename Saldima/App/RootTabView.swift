@@ -22,6 +22,7 @@ struct RootTabView: View {
                 SettingsView(session: session)
             }
         }
+        .tabBarMinimizeBehavior(.onScrollDown)
         .task {
             await session.openDefaultBook()
         }

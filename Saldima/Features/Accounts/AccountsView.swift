@@ -198,7 +198,7 @@ struct AccountsView: View {
                 Text("Create a book to start. It lives on this device and works with no account or network.")
             } actions: {
                 Button("New book\u{2026}") { sheet = .newBook }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.glassProminent)
             }
         } else if session.accounts.isEmpty {
             ContentUnavailableView(
@@ -208,6 +208,23 @@ struct AccountsView: View {
             )
         } else {
             List {
+                Section {
+                    GlassEffectContainer(spacing: 12) {
+                        HStack(spacing: 12) {
+                            SummaryCard(
+                                title: "Net assets",
+                                value: session.formatted(session.netAssets)
+                            )
+                            SummaryCard(
+                                title: "Profit",
+                                value: session.formatted(session.profit)
+                            )
+                        }
+                    }
+                }
+                .listRowInsets(EdgeInsets())
+                .listRowBackground(Color.clear)
+
                 Section {
                     ForEach(rows(session.accounts, collapsed: collapsed)) { row in
                         HStack(spacing: 4) {
@@ -256,14 +273,30 @@ struct AccountsView: View {
                         }
                     }
                 } footer: {
-                    VStack(alignment: .leading, spacing: 4) {
-                        LabeledContent("Net assets", value: session.formatted(session.netAssets))
-                        LabeledContent("Profit", value: session.formatted(session.profit))
-                        Text(session.bookName)
-                    }
+                    Text(session.bookName)
                 }
             }
         }
+    }
+}
+
+private struct SummaryCard: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.title3.monospacedDigit().weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .glassEffect(.regular, in: .rect(cornerRadius: 18))
     }
 }
 
@@ -374,7 +407,8 @@ private struct AccountEditor: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") { save() }
-                        .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                        .buttonStyle(.glassProminent)
+                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
             .confirmationDialog(
@@ -473,6 +507,7 @@ private struct NewBookSheet: View {
                             dismiss()
                         }
                     }
+                    .buttonStyle(.glassProminent)
                     .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
