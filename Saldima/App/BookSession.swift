@@ -110,6 +110,20 @@ final class BookSession {
         }
     }
 
+    /// Builds a gzip GnuCash XML export of the open book for the share sheet.
+    func exportXML() async -> (data: Data, filename: String)? {
+        guard let store, let bookURL else { return nil }
+        do {
+            let snapshot = try await store.exportSnapshot()
+            let data = try XMLBookWriter.data(snapshot, ids: ids)
+            let stem = bookURL.deletingPathExtension().lastPathComponent
+            return (data, "\(stem)-xml.gnucash")
+        } catch {
+            lastError = Self.message(for: error)
+            return nil
+        }
+    }
+
     @discardableResult
     func save(_ draft: AccountDraft, editing account: Account?) async -> Bool {
         guard let store else { return false }
