@@ -90,7 +90,11 @@ final class BookSession {
         }
     }
 
-    /// Imports an existing `.gnucash` (XML or SQLite) into this device's library.
+    /// Imports an existing `.gnucash` (XML or SQLite) into this device's
+    /// library. An XML book is materialized as a fresh SQLite working copy
+    /// (SQLite is still the live store today; the XML import boundary is the
+    /// same shape the eventual XML-canonical migration will use), so it opens
+    /// and edits exactly like a book created on-device.
     func importBook(from source: URL) async {
         let scoped = source.startAccessingSecurityScopedResource()
         defer { if scoped { source.stopAccessingSecurityScopedResource() } }
@@ -103,7 +107,13 @@ final class BookSession {
                 let stem = source.deletingPathExtension().lastPathComponent
                 destination = directory.appendingPathComponent("\(stem) \(number).gnucash")
             }
-            try FileManager.default.copyItem(at: source, to: destination)
+            switch try BookFile.detect(at: source) {
+            case .sqlite:
+                try FileManager.default.copyItem(at: source, to: destination)
+            case .xml:
+                let snapshot = try XMLBookReader.read(at: source)
+                try BookImporter.materialize(snapshot, at: destination, ids: ids)
+            }
             try await open(url: destination)
         } catch {
             lastError = Self.message(for: error)
