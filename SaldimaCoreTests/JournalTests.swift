@@ -104,3 +104,39 @@ struct JournalTests {
         await store.close()
     }
 }
+
+extension JournalTests {
+    @Test("attaches, reads and removes a receipt (GnuCash's doc-link) on a posted transaction")
+    func receiptAttachment() async throws {
+        let url = try journalBook()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = try BookStore(url: url)
+        let ids = SeededIDGenerator()
+        let roots = try await store.accounts()
+        let bank = try #require(account(named: "Checking", in: roots))
+        let rent = try #require(account(named: "Rent", in: roots))
+
+        let txGuid = try await store.post(
+            date: "2026-03-01",
+            description: "Office supplies",
+            splits: [
+                StoredSplit(accountGuid: bank.guid, value: try Money(num: -4200, denom: 100)),
+                StoredSplit(accountGuid: rent.guid, value: try Money(num: 4200, denom: 100)),
+            ],
+            receiptPath: "receipts/one.jpg",
+            ids: ids
+        )
+        var transactions = try await store.transactions()
+        #expect(transactions.first { $0.guid == txGuid }?.docLink == "receipts/one.jpg")
+
+        try await store.attachReceipt("receipts/two.jpg", to: txGuid)
+        transactions = try await store.transactions()
+        #expect(transactions.first { $0.guid == txGuid }?.docLink == "receipts/two.jpg")
+
+        try await store.attachReceipt(nil, to: txGuid)
+        transactions = try await store.transactions()
+        #expect(transactions.first { $0.guid == txGuid }?.docLink == nil)
+
+        await store.close()
+    }
+}

@@ -21,6 +21,8 @@ final class BookSession {
     private(set) var profit: Money = .zero
     private(set) var fraction: Int64 = 100
     private(set) var isLoading = false
+    private(set) var customers: [Customer] = []
+    private(set) var invoices: [Invoice] = []
     var lastError: String?
 
     private let ids: any IDGenerator
@@ -201,6 +203,69 @@ final class BookSession {
         }
     }
 
+    // MARK: - Receipts
+
+    /// A receipt image's path is stored relative to the book's own
+    /// directory (`setTransactionDocLink`), so it survives the sandbox
+    /// container moving between launches; this is where that path resolves.
+    private var receiptsDirectory: URL? {
+        bookURL?.deletingLastPathComponent().appendingPathComponent("receipts")
+    }
+
+    /// Writes a captured receipt image and returns the relative path to
+    /// hand to `post(receiptPath:)` or `attachReceipt`.
+    private func saveReceiptImage(_ data: Data) throws -> String {
+        guard let directory = receiptsDirectory else { throw BookStoreError.cannotOpen }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let name = "\(UUID().uuidString).jpg"
+        try data.write(to: directory.appendingPathComponent(name))
+        return "receipts/\(name)"
+    }
+
+    /// Loads a transaction's attached receipt image bytes, if any.
+    func receiptImageData(_ docLink: String) -> Data? {
+        guard let directory = receiptsDirectory else { return nil }
+        let fileName = (docLink as NSString).lastPathComponent
+        return try? Data(contentsOf: directory.appendingPathComponent(fileName))
+    }
+
+    /// Captures a receipt as a new expense: a simple two-leg posting
+    /// (debit the expense account, credit the payment account) with the
+    /// receipt image attached via `post(receiptPath:)` -- "create an
+    /// expense on the receipt screen."
+    @discardableResult
+    func postReceiptExpense(
+        date: Date,
+        description: String,
+        amount: Money,
+        expenseAccount: Guid,
+        paymentAccount: Guid,
+        imageData: Data
+    ) async -> Bool {
+        guard let store else { return false }
+        do {
+            let receiptPath = try saveReceiptImage(imageData)
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.dateFormat = "yyyy-MM-dd"
+            try await store.post(
+                date: formatter.string(from: date),
+                description: description,
+                splits: [
+                    StoredSplit(accountGuid: expenseAccount, value: amount),
+                    StoredSplit(accountGuid: paymentAccount, value: amount.negated()),
+                ],
+                receiptPath: receiptPath,
+                ids: ids
+            )
+            try await refresh()
+            return true
+        } catch {
+            lastError = Self.message(for: error)
+            return false
+        }
+    }
+
     func accountOptions() -> [(guid: Guid, name: String, depth: Int)] {
         func walk(_ nodes: [Account], depth: Int, into rows: inout [(Guid, String, Int)]) {
             for node in nodes where node.accountType != "ROOT" && !node.placeholder {
@@ -217,11 +282,152 @@ final class BookSession {
         lastError = nil
     }
 
+    // MARK: - Customers
+
+    @discardableResult
+    func saveCustomer(_ draft: CustomerDraft, editing customer: Customer?) async -> Bool {
+        guard let store else { return false }
+        do {
+            if let customer {
+                try await store.updateCustomer(customer.guid, with: draft)
+            } else {
+                try await store.createCustomer(draft, ids: ids)
+            }
+            try await refresh()
+            return true
+        } catch {
+            lastError = Self.message(for: error)
+            return false
+        }
+    }
+
+    @discardableResult
+    func delete(_ customer: Customer) async -> Bool {
+        guard let store else { return false }
+        do {
+            try await store.deleteCustomer(customer.guid)
+            try await refresh()
+            return true
+        } catch {
+            lastError = Self.message(for: error)
+            return false
+        }
+    }
+
+    // MARK: - Invoices
+
+    @discardableResult
+    func createInvoiceDraft(
+        customer: Customer,
+        invoiceNumber: String,
+        dateOpened: Date
+    ) async -> Guid? {
+        guard let store else { return nil }
+        do {
+            let guid = try await store.createInvoiceDraft(
+                customerGuid: customer.guid,
+                invoiceNumber: invoiceNumber,
+                dateOpened: Self.isoDate(dateOpened),
+                ids: ids
+            )
+            try await refresh()
+            return guid
+        } catch {
+            lastError = Self.message(for: error)
+            return nil
+        }
+    }
+
+    @discardableResult
+    func addInvoiceLine(
+        to invoice: Invoice,
+        date: Date,
+        description: String,
+        quantity: Money,
+        unitPrice: Money,
+        incomeAccount: Guid
+    ) async -> Bool {
+        guard let store else { return false }
+        do {
+            try await store.addInvoiceLine(
+                invoice.guid,
+                date: Self.isoDate(date),
+                description: description,
+                quantity: quantity,
+                unitPrice: unitPrice,
+                incomeAccountGuid: incomeAccount,
+                ids: ids
+            )
+            try await refresh()
+            return true
+        } catch {
+            lastError = Self.message(for: error)
+            return false
+        }
+    }
+
+    @discardableResult
+    func deleteInvoiceLine(_ line: InvoiceLine, from invoice: Invoice) async -> Bool {
+        guard let store else { return false }
+        do {
+            try await store.deleteInvoiceLine(line.guid, invoiceGuid: invoice.guid)
+            try await refresh()
+            return true
+        } catch {
+            lastError = Self.message(for: error)
+            return false
+        }
+    }
+
+    @discardableResult
+    func deleteInvoiceDraft(_ invoice: Invoice) async -> Bool {
+        guard let store else { return false }
+        do {
+            try await store.deleteInvoiceDraft(invoice.guid)
+            try await refresh()
+            return true
+        } catch {
+            lastError = Self.message(for: error)
+            return false
+        }
+    }
+
+    /// Posts a draft invoice: debits the chosen receivable account for the
+    /// total and credits each line's income account, like desktop GnuCash's
+    /// "Post Invoice". One-way -- a posted invoice is permanent ledger
+    /// history and can no longer be edited or deleted.
+    @discardableResult
+    func postInvoice(_ invoice: Invoice, receivableAccount: Guid, postedDate: Date) async -> Bool {
+        guard let store else { return false }
+        do {
+            try await store.postInvoice(
+                invoice.guid,
+                receivableAccountGuid: receivableAccount,
+                postedDate: Self.isoDate(postedDate),
+                ids: ids
+            )
+            try await refresh()
+            return true
+        } catch {
+            lastError = Self.message(for: error)
+            return false
+        }
+    }
+
+    private static func isoDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
+    }
+
     private func refresh() async throws {
         guard let store else { return }
         accounts = try await store.accounts()
         balances = try await store.balances()
         transactions = try await store.transactions()
+        customers = try await store.customers()
+        invoices = try await store.invoices()
         totals = try AccountRollup.totals(accounts, balances: balances)
         if let currency = try await store.bookCurrency() {
             fraction = currency.fraction
@@ -288,6 +494,22 @@ final class BookSession {
             return "That account is no longer in the book."
         case BookWriterError.alreadyExists:
             return "A book with that name is already on this device."
+        case CustomerEditError.invalidName:
+            return "Enter a name of 200 characters or fewer."
+        case CustomerEditError.customerInUse:
+            return "This client has invoices and cannot be deleted."
+        case CustomerEditError.unknownCustomer:
+            return "That client is no longer in the book."
+        case InvoiceEditError.noLines:
+            return "Add at least one line before posting."
+        case InvoiceEditError.alreadyPosted:
+            return "A posted invoice cannot be edited or deleted."
+        case InvoiceEditError.unknownAccount:
+            return "Choose an account that still exists."
+        case InvoiceEditError.unknownCustomer, InvoiceEditError.unknownInvoice:
+            return "That record is no longer in the book."
+        case JournalError.invalidDate:
+            return "Enter a valid date."
         default:
             return error.localizedDescription
         }
