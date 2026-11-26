@@ -9,14 +9,20 @@ logo. The web track is `johnarleyburns/saldima`.
 
 ## Source of truth
 
-1. The Saldima spec: Spec tab (iPhone app, Testing, License, Coding-agent
+1. `docs/architecture/TECHNICAL-DESIGN.md` — the current architecture
+   baseline (mirrors the web repo's copy). GnuCash XML is the canonical
+   book format; SQLite is for import/export of a desktop SQLite-dialect
+   file only, never the live store. Zero-knowledge sync is a later,
+   deferred phase. See `docs/plans/P0.md` risks for the migration's phasing.
+2. The Saldima spec: Spec tab (iPhone app, Testing, License, Coding-agent
    handoff) and Design tab (iPhone app design). Local copies:
-   `~/Downloads/Spec.md` and `~/Downloads/Design (HLD + LLD).md`.
-2. The Go-to-market doc (`~/Downloads/Go-to-market.md`) for positioning and
+   `~/Downloads/Spec.md` and `~/Downloads/Design (HLD + LLD).md`. Their
+   storage passages are superseded by (1).
+3. The Go-to-market doc (`~/Downloads/Go-to-market.md`) for positioning and
    launch constraints: no "gnucash" in the name or domain, no analytics, no
    third-party ads/scripts, source always linked.
-3. This file and `docs/plans/P0.md`.
-4. The GitHub issue being worked; its acceptance criteria define done.
+4. This file and `docs/plans/P0.md`.
+5. The GitHub issue being worked; its acceptance criteria define done.
 
 If the spec, design and this file disagree, stop and ask in the issue. Record
 undecided items under **Risks and open questions**; never guess.
@@ -46,8 +52,15 @@ undecided items under **Risks and open questions**; never guess.
   largest Dynamic Type size.
 - **Project generation:** XcodeGen `project.yml`. Never hand-edit
   `Saldima.xcodeproj`; run `xcodegen generate` after changing `project.yml`.
-- **Persistence:** a hand-rolled `actor` over SQLite3 with integer-numbered,
-  append-only migrations. No GRDB, no Core Data.
+- **Persistence (migrating — see `docs/architecture/TECHNICAL-DESIGN.md`):**
+  target is GnuCash XML as the sole canonical on-disk book, parsed into an
+  in-memory model and atomically rewritten on save; SQLite is an
+  import/export adapter only (reading a desktop SQLite-dialect file to
+  convert into the internal XML model, or writing one on export), never the
+  live store. Until that migration lands, the running app still uses a
+  hand-rolled `actor` over SQLite3 with integer-numbered, append-only
+  migrations as the live store (`BookStore.swift`) — do not build new
+  accounting features against it. No GRDB, no Core Data either way.
 - **Observation:** `@Observable` only. `ObservableObject` is banned and fails
   `scripts/check-observable.sh`.
 
