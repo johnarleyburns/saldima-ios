@@ -69,13 +69,29 @@ public struct AccountDraft: Sendable, Hashable {
     }
 }
 
-public struct StoredSplit: Sendable, Hashable {
+public struct StoredSplit: Sendable, Hashable, Identifiable {
     public let accountGuid: Guid
     public let value: Money
+    public let guid: Guid?
+    /// `"n"` not reconciled, `"c"` cleared, `"y"` reconciled -- GnuCash's own codes.
+    public let reconcileState: String
+    /// Set only once `reconcileState` is `"y"`; `YYYY-MM-DD HH:MM:SS +ZZZZ`.
+    public let reconcileDate: String?
 
-    public init(accountGuid: Guid, value: Money) {
+    public var id: Guid { guid ?? accountGuid }
+
+    public init(
+        accountGuid: Guid,
+        value: Money,
+        guid: Guid? = nil,
+        reconcileState: String = "n",
+        reconcileDate: String? = nil
+    ) {
         self.accountGuid = accountGuid
         self.value = value
+        self.guid = guid
+        self.reconcileState = reconcileState
+        self.reconcileDate = reconcileDate
     }
 }
 
@@ -112,6 +128,8 @@ public enum JournalError: Error, Equatable, Sendable {
     case unknownTransaction(Guid)
     case unbalanced
     case alreadyPosted(Guid)
+    case unknownSplit(Guid)
+    case missingReconcileDate
 }
 
 public enum AccountEditError: Error, Equatable, Sendable {
@@ -495,7 +513,15 @@ public actor BookStore {
                 guid: row.guid,
                 date: row.date,
                 description: row.description,
-                splits: row.splits.map { StoredSplit(accountGuid: $0.accountGuid, value: $0.value) },
+                splits: row.splits.map {
+                    StoredSplit(
+                        accountGuid: $0.accountGuid,
+                        value: $0.value,
+                        guid: $0.guid,
+                        reconcileState: $0.reconcileState,
+                        reconcileDate: $0.reconcileDate
+                    )
+                },
                 docLink: row.docLink
             )
         }
@@ -549,6 +575,36 @@ public actor BookStore {
             throw JournalError.unknownTransaction(transactionGuid)
         }
         document.setTransactionDocLink(transactionGuid, uri: receiptPath)
+        try save()
+    }
+
+    /// Sets one split's reconcile state, the same action as checking a row
+    /// off in GnuCash's Reconcile window. `reconcileDate` is required for
+    /// `"y"` (reconciled) and cleared for any other state, matching desktop
+    /// GnuCash. Distinct from bank integration/auto-feeds, which this app
+    /// does not do -- this only records what the owner checked off by hand.
+    public func setSplitReconcileState(
+        transactionGuid: Guid,
+        splitGuid: Guid,
+        state: String,
+        reconcileDate: String?
+    ) throws {
+        guard let document else { throw BookStoreError.cannotOpen }
+        guard let transaction = document.transaction(transactionGuid) else {
+            throw JournalError.unknownTransaction(transactionGuid)
+        }
+        guard transaction.splits.contains(where: { $0.guid == splitGuid }) else {
+            throw JournalError.unknownSplit(splitGuid)
+        }
+        if state == "y", reconcileDate == nil {
+            throw JournalError.missingReconcileDate
+        }
+        document.setSplitReconcileState(
+            transactionGuid: transactionGuid,
+            splitGuid: splitGuid,
+            state: state,
+            reconcileDate: reconcileDate
+        )
         try save()
     }
 

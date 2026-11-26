@@ -140,3 +140,110 @@ extension JournalTests {
         await store.close()
     }
 }
+
+extension JournalTests {
+    @Test("reconciles a split, requires a date to mark it reconciled, and rejects unknown ids")
+    func reconcile() async throws {
+        let url = try journalBook()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = try BookStore(url: url)
+        let ids = SeededIDGenerator()
+        let roots = try await store.accounts()
+        let checking = try #require(account(named: "Checking", in: roots))
+        let salary = try #require(account(named: "Salary", in: roots))
+
+        let txGuid = try await store.post(
+            date: "2026-02-01",
+            description: "Coffee",
+            splits: [
+                StoredSplit(accountGuid: checking.guid, value: try Money(num: -500, denom: 100)),
+                StoredSplit(accountGuid: salary.guid, value: try Money(num: 500, denom: 100)),
+            ],
+            ids: ids
+        )
+        var transactions = try await store.transactions()
+        let bankSplitGuid = try #require(
+            transactions.first { $0.guid == txGuid }?.splits.first { $0.accountGuid == checking.guid }?.guid
+        )
+
+        try await store.setSplitReconcileState(
+            transactionGuid: txGuid,
+            splitGuid: bankSplitGuid,
+            state: "c",
+            reconcileDate: nil
+        )
+        transactions = try await store.transactions()
+        var split = try #require(
+            transactions.first { $0.guid == txGuid }?.splits.first { $0.guid == bankSplitGuid }
+        )
+        #expect(split.reconcileState == "c")
+        #expect(split.reconcileDate == nil)
+
+        try await store.setSplitReconcileState(
+            transactionGuid: txGuid,
+            splitGuid: bankSplitGuid,
+            state: "y",
+            reconcileDate: "2026-02-05 00:00:00 +0000"
+        )
+        transactions = try await store.transactions()
+        split = try #require(
+            transactions.first { $0.guid == txGuid }?.splits.first { $0.guid == bankSplitGuid }
+        )
+        #expect(split.reconcileState == "y")
+        #expect(split.reconcileDate == "2026-02-05 00:00:00 +0000")
+
+        // Reconciling again with a new date updates it in place.
+        try await store.setSplitReconcileState(
+            transactionGuid: txGuid,
+            splitGuid: bankSplitGuid,
+            state: "y",
+            reconcileDate: "2026-02-06 00:00:00 +0000"
+        )
+        transactions = try await store.transactions()
+        split = try #require(
+            transactions.first { $0.guid == txGuid }?.splits.first { $0.guid == bankSplitGuid }
+        )
+        #expect(split.reconcileDate == "2026-02-06 00:00:00 +0000")
+
+        try await store.setSplitReconcileState(
+            transactionGuid: txGuid,
+            splitGuid: bankSplitGuid,
+            state: "n",
+            reconcileDate: nil
+        )
+        transactions = try await store.transactions()
+        split = try #require(
+            transactions.first { $0.guid == txGuid }?.splits.first { $0.guid == bankSplitGuid }
+        )
+        #expect(split.reconcileState == "n")
+        #expect(split.reconcileDate == nil)
+
+        await #expect(throws: JournalError.missingReconcileDate) {
+            try await store.setSplitReconcileState(
+                transactionGuid: txGuid,
+                splitGuid: bankSplitGuid,
+                state: "y",
+                reconcileDate: nil
+            )
+        }
+        let unknown = Guid(String(repeating: "f", count: 32))!
+        await #expect(throws: JournalError.unknownTransaction(unknown)) {
+            try await store.setSplitReconcileState(
+                transactionGuid: unknown,
+                splitGuid: bankSplitGuid,
+                state: "c",
+                reconcileDate: nil
+            )
+        }
+        await #expect(throws: JournalError.unknownSplit(unknown)) {
+            try await store.setSplitReconcileState(
+                transactionGuid: txGuid,
+                splitGuid: unknown,
+                state: "c",
+                reconcileDate: nil
+            )
+        }
+
+        await store.close()
+    }
+}
