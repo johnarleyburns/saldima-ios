@@ -27,12 +27,15 @@ public enum BookWriterError: Error, Equatable, Sendable {
     case sqlite(String)
 }
 
-/// Creates a fresh GnuCash 5.14 SQLite book from one of our account templates.
+/// Creates a fresh GnuCash book from one of our account templates. XML is
+/// the canonical on-disk format (see `XMLBookDocument`); every GUID comes
+/// from an injected `IDGenerator` so tests replay exactly.
 ///
-/// The schema is the observed on-disk interface of GnuCash 5.14 (the version we
-/// pin as the oracle); no GnuCash source is copied. Only the tables GnuCash
-/// needs to open and save the book are written, and every GUID comes from an
-/// injected `IDGenerator` so tests replay exactly.
+/// The SQLite-writing helpers below (`schema`, `insertAccount`, etc.) are no
+/// longer used to create the live book -- they document the observed
+/// on-disk interface of GnuCash 5.14 (the version we pin as the oracle; no
+/// GnuCash source is copied) and are reusable groundwork for an explicit
+/// "export as a SQLite-dialect file" feature, which SQLite is still for.
 public enum BookWriter {
     public static let gnuCashVersion: Int64 = 5_000_014
     public static let gnuCashResaveVersion: Int64 = 19_920
@@ -51,85 +54,48 @@ public enum BookWriter {
             try fileManager.removeItem(at: url)
         }
 
-        var handle: OpaquePointer?
-        let status = sqlite3_open_v2(
-            url.path,
-            &handle,
-            SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE,
-            nil
-        )
-        guard status == SQLITE_OK, let database = handle else {
-            if let handle { sqlite3_close(handle) }
-            throw BookWriterError.cannotCreate
-        }
-        defer { sqlite3_close(database) }
+        let bookGuid = ids.guid()
+        let rootGuid = ids.guid()
+        let templateRootGuid = ids.guid()
 
-        try execute(database, "PRAGMA journal_mode = DELETE;")
-        try execute(database, "BEGIN IMMEDIATE;")
-        do {
-            try execute(database, schema)
-            try insertVersions(database)
-
-            let bookGuid = ids.guid()
-            let rootGuid = ids.guid()
-            let templateRootGuid = ids.guid()
-            let commodityGuid = ids.guid()
-
-            try insertCommodity(database, guid: commodityGuid, currency: currency)
-            try insertAccount(
-                database,
-                guid: rootGuid,
-                name: "Root Account",
-                type: "ROOT",
-                commodity: nil,
-                parent: nil,
-                hidden: false,
-                placeholder: false
-            )
-            try insertAccount(
-                database,
-                guid: templateRootGuid,
-                name: "Template Root",
-                type: "ROOT",
-                commodity: nil,
-                parent: nil,
-                hidden: false,
-                placeholder: false
-            )
-            try insertRow(
-                database,
-                "INSERT INTO books(guid, root_account_guid, root_template_guid) VALUES (?, ?, ?);",
-                [bookGuid.rawValue, rootGuid.rawValue, templateRootGuid.rawValue]
-            )
-
-            func write(_ accounts: [TemplateAccount], parent: Guid) throws {
-                for account in accounts {
-                    let guid = ids.guid()
-                    try insertAccount(
-                        database,
+        var accounts: [SnapshotAccount] = [
+            SnapshotAccount(guid: rootGuid, name: "Root Account", type: "ROOT"),
+        ]
+        func collect(_ templateAccounts: [TemplateAccount], parent: Guid) {
+            for account in templateAccounts {
+                let guid = ids.guid()
+                accounts.append(
+                    SnapshotAccount(
                         guid: guid,
                         name: account.name,
                         type: account.type.rawValue,
-                        commodity: commodityGuid,
-                        parent: parent,
-                        hidden: false,
+                        parentGuid: parent,
+                        commodityCode: currency.code,
                         placeholder: account.placeholder
                     )
-                    try write(account.children, parent: guid)
-                }
+                )
+                collect(account.children, parent: guid)
             }
-            try write(template.roots, parent: rootGuid)
+        }
+        collect(template.roots, parent: rootGuid)
 
-            try execute(database, "COMMIT;")
+        let snapshot = BookSnapshot(
+            bookGuid: bookGuid,
+            currencyCode: currency.code,
+            fraction: currency.fraction,
+            accounts: accounts,
+            transactions: []
+        )
+        let document = XMLBookDocument.build(from: snapshot, templateRootGuid: templateRootGuid, ids: ids)
+        do {
+            try Gzip.deflate(document.serialize()).write(to: url, options: .atomic)
         } catch {
-            try? execute(database, "ROLLBACK;")
-            throw error
+            throw BookWriterError.cannotCreate
         }
     }
 
-    // MARK: - Rows
+    // MARK: - Rows (export-adapter groundwork, see the type doc comment)
 
-    /// Shared with `BookImporter`, which materializes a snapshot the same way.
     static func insertVersions(_ database: OpaquePointer) throws {
         let rows: [(String, Int64)] = [
             ("Gnucash", gnuCashVersion),

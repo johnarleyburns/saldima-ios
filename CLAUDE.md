@@ -52,15 +52,16 @@ undecided items under **Risks and open questions**; never guess.
   largest Dynamic Type size.
 - **Project generation:** XcodeGen `project.yml`. Never hand-edit
   `Saldima.xcodeproj`; run `xcodegen generate` after changing `project.yml`.
-- **Persistence (migrating — see `docs/architecture/TECHNICAL-DESIGN.md`):**
-  target is GnuCash XML as the sole canonical on-disk book, parsed into an
-  in-memory model and atomically rewritten on save; SQLite is an
-  import/export adapter only (reading a desktop SQLite-dialect file to
-  convert into the internal XML model, or writing one on export), never the
-  live store. Until that migration lands, the running app still uses a
-  hand-rolled `actor` over SQLite3 with integer-numbered, append-only
-  migrations as the live store (`BookStore.swift`) — do not build new
-  accounting features against it. No GRDB, no Core Data either way.
+- **Persistence:** GnuCash XML is the sole canonical on-disk book
+  (`XMLBookDocument`, wrapped by `BookStore`, an `actor`): the whole file is
+  parsed once on open, mutated in memory, and atomically rewritten on every
+  save — the same way desktop GnuCash's own XML backend behaves. SQLite is
+  an import/export adapter only: `SQLiteBookReader` reads a desktop
+  SQLite-dialect file into the same `BookSnapshot` `XMLBookReader` produces
+  for XML, and `BookImporter` materializes either into a fresh XML working
+  copy. A legacy SQLite-dialect file still opens transparently (read into
+  the equivalent in-memory XML model) but is rewritten as XML the first
+  time anything saves. No GRDB, no Core Data.
 - **Observation:** `@Observable` only. `ObservableObject` is banned and fails
   `scripts/check-observable.sh`.
 
