@@ -168,13 +168,15 @@ final class BookSession {
         (try? value.formatted(fraction: fraction)) ?? "—"
     }
 
+    /// Posts a transaction with two or more splits, each a signed amount
+    /// (debit positive, credit negative); the splits used must sum to zero.
+    /// Two legs cover a simple payment; more support entries with a tax or
+    /// fee line (expense + input tax + payable, say).
     @discardableResult
     func post(
         date: Date,
         description: String,
-        from: Guid,
-        to: Guid,
-        amount: Money
+        splits: [(account: Guid, amount: Money)]
     ) async -> Bool {
         guard let store else { return false }
         let formatter = DateFormatter()
@@ -184,13 +186,7 @@ final class BookSession {
             try await store.post(
                 date: formatter.string(from: date),
                 description: description,
-                splits: [
-                    StoredSplit(accountGuid: from, value: amount),
-                    StoredSplit(
-                        accountGuid: to,
-                        value: try Money(num: -amount.num, denom: amount.denom)
-                    ),
-                ],
+                splits: splits.map { StoredSplit(accountGuid: $0.account, value: $0.amount) },
                 ids: ids
             )
             try await refresh()

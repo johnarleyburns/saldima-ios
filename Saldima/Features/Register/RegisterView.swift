@@ -72,15 +72,18 @@ struct RegisterView: View {
     }
 }
 
+/// Two splits cover a simple payment; up to four more are optional for an
+/// entry with a tax or fee line (expense + input tax + payable, say).
+private let splitRowCount = 6
+
 private struct NewTransactionSheet: View {
     let session: BookSession
 
     @Environment(\.dismiss) private var dismiss
     @State private var date = Date()
     @State private var description = ""
-    @State private var from: Guid?
-    @State private var to: Guid?
-    @State private var amount = ""
+    @State private var splitAccounts: [Guid?] = Array(repeating: nil, count: splitRowCount)
+    @State private var splitAmounts: [String] = Array(repeating: "", count: splitRowCount)
     @State private var localError: String?
 
     private var options: [(guid: Guid, name: String, depth: Int)] {
@@ -96,21 +99,20 @@ private struct NewTransactionSheet: View {
                         .accessibilityIdentifier("transaction.description")
                 }
                 Section {
-                    Picker("From", selection: $from) {
-                        Text("Choose").tag(Guid?.none)
-                        ForEach(options, id: \.guid) { option in
-                            Text(option.name).tag(Guid?.some(option.guid))
+                    Text("Each split takes a signed amount; the splits used must sum to zero.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    ForEach(0..<splitRowCount, id: \.self) { index in
+                        Picker(index < 2 ? "Account" : "Account (optional)", selection: $splitAccounts[index]) {
+                            Text("Choose").tag(Guid?.none)
+                            ForEach(options, id: \.guid) { option in
+                                Text(option.name).tag(Guid?.some(option.guid))
+                            }
                         }
+                        TextField("Amount", text: $splitAmounts[index])
+                            .keyboardType(.decimalPad)
+                            .accessibilityIdentifier("transaction.split.\(index).amount")
                     }
-                    Picker("To", selection: $to) {
-                        Text("Choose").tag(Guid?.none)
-                        ForEach(options, id: \.guid) { option in
-                            Text(option.name).tag(Guid?.some(option.guid))
-                        }
-                    }
-                    TextField("Amount", text: $amount)
-                        .keyboardType(.decimalPad)
-                        .accessibilityIdentifier("transaction.amount")
                 }
                 if let localError {
                     Text(localError).foregroundStyle(.red).font(.footnote)
@@ -131,27 +133,28 @@ private struct NewTransactionSheet: View {
     }
 
     private func post() {
-        guard let from, let to, from != to else {
-            localError = "Choose two different accounts."
-            return
-        }
         let trimmed = description.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             localError = "Enter a description."
             return
         }
-        guard let value = try? Money.parseHalfUp(amount, fraction: 100), value != .zero else {
-            localError = "Enter an amount like 12.34."
+        var splits: [(account: Guid, amount: Money)] = []
+        for index in 0..<splitRowCount {
+            let account = splitAccounts[index]
+            let text = splitAmounts[index].trimmingCharacters(in: .whitespacesAndNewlines)
+            if account == nil && text.isEmpty { continue }
+            guard let account, let value = try? Money.parseHalfUp(text, fraction: 100), value != .zero else {
+                localError = "Fill in every split used: an account and a non-zero amount."
+                return
+            }
+            splits.append((account: account, amount: value))
+        }
+        guard splits.count >= 2 else {
+            localError = "Use at least two splits."
             return
         }
         Task {
-            if await session.post(
-                date: date,
-                description: trimmed,
-                from: from,
-                to: to,
-                amount: value
-            ) {
+            if await session.post(date: date, description: trimmed, splits: splits) {
                 dismiss()
             } else {
                 localError = session.lastError
