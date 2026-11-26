@@ -129,7 +129,8 @@ public enum BookWriter {
 
     // MARK: - Rows
 
-    private static func insertVersions(_ database: OpaquePointer) throws {
+    /// Shared with `BookImporter`, which materializes a snapshot the same way.
+    static func insertVersions(_ database: OpaquePointer) throws {
         let rows: [(String, Int64)] = [
             ("Gnucash", gnuCashVersion),
             ("Gnucash-Resave", gnuCashResaveVersion),
@@ -165,7 +166,7 @@ public enum BookWriter {
         }
     }
 
-    private static func insertCommodity(
+    static func insertCommodity(
         _ database: OpaquePointer,
         guid: Guid,
         currency: BookCurrency
@@ -182,7 +183,7 @@ public enum BookWriter {
         )
     }
 
-    private static func insertAccount(
+    static func insertAccount(
         _ database: OpaquePointer,
         guid: Guid,
         name: String,
@@ -190,7 +191,9 @@ public enum BookWriter {
         commodity: Guid?,
         parent: Guid?,
         hidden: Bool,
-        placeholder: Bool
+        placeholder: Bool,
+        code: String = "",
+        description: String = ""
     ) throws {
         try insertRow(
             database,
@@ -198,7 +201,7 @@ public enum BookWriter {
             INSERT INTO accounts(
                 guid, name, account_type, commodity_guid, commodity_scu,
                 non_std_scu, parent_guid, code, description, hidden, placeholder
-            ) VALUES (?, ?, ?, ?, 0, 0, ?, '', '', ?, ?);
+            ) VALUES (?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?);
             """,
             [
                 guid.rawValue,
@@ -206,6 +209,8 @@ public enum BookWriter {
                 type,
                 commodity.map { $0.rawValue as any SQLiteValue } ?? SQLiteNull(),
                 parent.map { $0.rawValue as any SQLiteValue } ?? SQLiteNull(),
+                code,
+                description,
                 hidden ? 1 : 0,
                 placeholder ? 1 : 0,
             ]
@@ -214,7 +219,7 @@ public enum BookWriter {
 
     // MARK: - SQLite
 
-    private static func execute(_ database: OpaquePointer, _ sql: String) throws {
+    static func execute(_ database: OpaquePointer, _ sql: String) throws {
         var error: UnsafeMutablePointer<CChar>?
         guard sqlite3_exec(database, sql, nil, nil, &error) == SQLITE_OK else {
             let message = error.map { String(cString: $0) } ?? "sqlite error"
@@ -223,7 +228,7 @@ public enum BookWriter {
         }
     }
 
-    private static func insertRow(
+    static func insertRow(
         _ database: OpaquePointer,
         _ sql: String,
         _ values: [any SQLiteValue]
