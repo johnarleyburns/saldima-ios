@@ -428,8 +428,10 @@ public actor BookStore {
         } catch {
             throw BookStoreError.corruptData
         }
+        // A fixed name is safe: the actor serializes its own saves, so there
+        // is never more than one writer for this file at a time.
         let tempURL = fileURL.deletingLastPathComponent()
-            .appendingPathComponent(".\(UUID().uuidString).tmp")
+            .appendingPathComponent(".\(fileURL.lastPathComponent)-saving.tmp")
         do {
             try compressed.write(to: tempURL, options: .atomic)
             // `FileManager.replaceItemAt` is unreliable on Linux
