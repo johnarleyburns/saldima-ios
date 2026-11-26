@@ -207,10 +207,10 @@ private struct InvoiceDetailView: View {
                                 }
                             }
                         }
-                        .deleteDisabled(invoice.isPosted)
                         .onDelete { offsets in
                             delete(offsets, from: invoice)
                         }
+                        .deleteDisabled(invoice.isPosted)
                         HStack {
                             Text("Total")
                                 .font(.headline)
