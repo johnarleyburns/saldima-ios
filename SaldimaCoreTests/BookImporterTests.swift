@@ -81,3 +81,35 @@ struct BookImporterTests {
         try BookImporter.materialize(snapshot, at: url, ids: SeededIDGenerator(), overwrite: true)
     }
 }
+
+@Suite("Gronewald synthetic ledger fixture")
+struct GronewaldFixtureTests {
+    @Test("imports the real ~3,300-transaction synthetic ledger and reopens it")
+    func importsGronewaldFixture() async throws {
+        let snapshot = try XMLBookReader.read(at: fixture("gronewald-gl-2023-01.gnucash"))
+        #expect(snapshot.transactions.count == 3305)
+
+        let url = temporaryBookURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        try BookImporter.materialize(snapshot, at: url, ids: SeededIDGenerator())
+
+        let store = try BookStore(url: url)
+        let roots = try await store.accounts()
+        let transactions = try await store.transactions()
+        await store.close()
+
+        func flatten(_ accounts: [Account]) -> [Account] {
+            accounts + accounts.flatMap { flatten($0.children) }
+        }
+        #expect(flatten(roots).filter { $0.accountType != "ROOT" }.count == 22)
+        #expect(transactions.count == 3305)
+
+        var total = Money.zero
+        for transaction in transactions {
+            for split in transaction.splits {
+                total = try Money.add(total, split.value)
+            }
+        }
+        #expect(total == Money.zero)
+    }
+}
