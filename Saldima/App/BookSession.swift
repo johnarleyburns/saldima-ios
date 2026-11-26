@@ -203,6 +203,33 @@ final class BookSession {
         }
     }
 
+    /// The same action as checking a row off in GnuCash's Reconcile window.
+    @discardableResult
+    func setSplitReconcileState(
+        transactionGuid: Guid,
+        splitGuid: Guid,
+        state: String,
+        reconcileDate: Date?
+    ) async -> Bool {
+        guard let store else { return false }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        do {
+            try await store.setSplitReconcileState(
+                transactionGuid: transactionGuid,
+                splitGuid: splitGuid,
+                state: state,
+                reconcileDate: reconcileDate.map { "\(formatter.string(from: $0)) 00:00:00 +0000" }
+            )
+            try await refresh()
+            return true
+        } catch {
+            lastError = Self.message(for: error)
+            return false
+        }
+    }
+
     // MARK: - Receipts
 
     /// A receipt image's path is stored relative to the book's own
@@ -510,6 +537,10 @@ final class BookSession {
             return "That record is no longer in the book."
         case JournalError.invalidDate:
             return "Enter a valid date."
+        case JournalError.missingReconcileDate:
+            return "A reconcile date is required to mark a split reconciled."
+        case JournalError.unknownSplit, JournalError.unknownTransaction:
+            return "That split is no longer in the book."
         default:
             return error.localizedDescription
         }

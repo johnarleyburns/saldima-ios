@@ -380,6 +380,7 @@ private struct AccountEditor: View {
     @State private var hidden: Bool
     @State private var placeholder: Bool
     @State private var confirmingDelete = false
+    @State private var reconciling = false
 
     init(session: BookSession, editing: Account?, accounts: [Account]) {
         self.session = session
@@ -431,6 +432,12 @@ private struct AccountEditor: View {
                 }
                 if editing != nil {
                     Section {
+                        Button("Reconcile") {
+                            reconciling = true
+                        }
+                        .accessibilityIdentifier("account.reconcile")
+                    }
+                    Section {
                         Button("Delete account", role: .destructive) {
                             confirmingDelete = true
                         }
@@ -447,6 +454,11 @@ private struct AccountEditor: View {
                     Button("Save") { save() }
                         .buttonStyle(.glassProminent)
                     .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+            .sheet(isPresented: $reconciling) {
+                if let editing {
+                    ReconcileView(session: session, account: editing)
                 }
             }
             .confirmationDialog(

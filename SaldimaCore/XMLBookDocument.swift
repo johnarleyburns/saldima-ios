@@ -33,6 +33,28 @@ final class XMLBookDocument {
     struct SplitRow: Sendable, Hashable {
         let accountGuid: Guid
         let value: Money
+        let guid: Guid?
+        let memo: String
+        /// `"n"` not reconciled, `"c"` cleared, `"y"` reconciled -- GnuCash's own codes.
+        let reconcileState: String
+        /// Set only once `reconcileState` is `"y"`; `YYYY-MM-DD HH:MM:SS +ZZZZ`.
+        let reconcileDate: String?
+
+        init(
+            accountGuid: Guid,
+            value: Money,
+            guid: Guid? = nil,
+            memo: String = "",
+            reconcileState: String = "n",
+            reconcileDate: String? = nil
+        ) {
+            self.accountGuid = accountGuid
+            self.value = value
+            self.guid = guid
+            self.memo = memo
+            self.reconcileState = reconcileState
+            self.reconcileDate = reconcileDate
+        }
     }
 
     struct TransactionRow: Sendable, Hashable {
@@ -341,7 +363,21 @@ final class XMLBookDocument {
             else {
                 return nil
             }
-            return SplitRow(accountGuid: account, value: value)
+            let splitGuid = guidValue(splitNode, localName: "id")
+            let memo = firstChild(splitNode, localName: "memo").map(decodedText) ?? ""
+            let reconcileStateText = firstChild(splitNode, localName: "reconciled-state").map(decodedText)
+            let reconcileState = (reconcileStateText?.isEmpty ?? true) ? "n" : reconcileStateText!
+            let reconcileDate = firstChild(splitNode, localName: "reconcile-date")
+                .flatMap { firstChild($0, localName: "date") }
+                .map(decodedText)
+            return SplitRow(
+                accountGuid: account,
+                value: value,
+                guid: splitGuid,
+                memo: memo,
+                reconcileState: reconcileState,
+                reconcileDate: reconcileDate
+            )
         }
         let docLink = firstChild(node, localName: "slots")
             .map { children($0, localName: "slot") }
@@ -471,6 +507,41 @@ final class XMLBookDocument {
         book.addChild(node)
         transactionIndex[guid] = node
         return transactionRow(node)!
+    }
+
+    /// Sets one split's reconcile state, the same action as checking a row
+    /// off in GnuCash's Reconcile window. `reconcileDate` is only written
+    /// when `state == "y"` (reconciled); any other state clears it,
+    /// matching desktop GnuCash. Silently no-ops on an unknown transaction
+    /// or split -- `BookStore` validates and throws before calling this.
+    func setSplitReconcileState(
+        transactionGuid: Guid,
+        splitGuid: Guid,
+        state: String,
+        reconcileDate: String?
+    ) {
+        guard let transactionNode = transactionIndex[transactionGuid] else { return }
+        let splitsContainer = firstChild(transactionNode, localName: "splits") ?? transactionNode
+        guard
+            let splitNode = children(splitsContainer, localName: "split").first(where: {
+                guidValue($0, localName: "id") == splitGuid
+            })
+        else {
+            return
+        }
+        setChildText(splitNode, localName: "reconciled-state", tag: "split:reconciled-state", value: state)
+        let existingDate = firstChild(splitNode, localName: "reconcile-date")
+        if state == "y", let reconcileDate {
+            if let existingDate {
+                firstChild(existingDate, localName: "date")?.text = escapeXml(reconcileDate)
+            } else {
+                let dateNode = XNode(name: "split:reconcile-date")
+                dateNode.addChild(leaf("ts:date", reconcileDate))
+                splitNode.addChild(dateNode)
+            }
+        } else {
+            existingDate?.detach()
+        }
     }
 
     /// Sets or clears a transaction's "Associate File/Location" --
