@@ -118,6 +118,134 @@ struct XMLBookDocumentTests {
         #expect(document.transactions().count == 1)
     }
 
+    @Test("creates a customer, an invoice with lines, and posts it as a real transaction")
+    func invoicingCRUD() throws {
+        let document = try XMLBookDocument.parse(data: loadFixtureData("oracle-mini.gnucash"))
+        let bank = try #require(document.accounts().first { $0.name == "Bank" }?.guid)
+        let salary = try #require(document.accounts().first { $0.name == "Salary" }?.guid)
+        let customerGuid = try #require(Guid(String(repeating: "c", count: 32)))
+
+        let customer = document.createCustomer(
+            guid: customerGuid,
+            name: "Acme Holdings",
+            customerNumber: "C-0001",
+            addressName: "Acme Holdings",
+            addressLine1: "1 Market St",
+            addressLine2: "Suite 400",
+            phone: "555-0100",
+            email: "billing@acme.test",
+            notes: "Net 30",
+            currencyCode: "USD"
+        )
+        #expect(customer.name == "Acme Holdings")
+        #expect(document.customers().count == 1)
+        #expect(document.customer(customerGuid)?.customerNumber == "C-0001")
+
+        document.updateCustomer(
+            customerGuid,
+            name: "Acme Holdings LLC",
+            customerNumber: "C-0001",
+            addressName: "Acme Holdings LLC",
+            addressLine1: "1 Market St",
+            addressLine2: "Suite 400",
+            phone: "555-0100",
+            email: "billing@acme.test",
+            notes: "Net 30",
+            active: true
+        )
+        #expect(document.customer(customerGuid)?.name == "Acme Holdings LLC")
+
+        let invoiceGuid = try #require(Guid(String(repeating: "d", count: 32)))
+        let invoice = document.createInvoice(
+            guid: invoiceGuid,
+            invoiceNumber: "INV-1001",
+            customerGuid: customerGuid,
+            dateOpened: "2026-03-01",
+            notes: "March premium",
+            currencyCode: "USD"
+        )
+        #expect(invoice.isPosted == false)
+        #expect(document.invoices().count == 1)
+
+        let lineGuid = try #require(Guid(String(repeating: "e", count: 32)))
+        let entry = document.addInvoiceEntry(
+            guid: lineGuid,
+            invoiceGuid: invoiceGuid,
+            date: "2026-03-01",
+            description: "Monthly premium",
+            quantity: try Money(num: 1, denom: 1),
+            unitPrice: try Money(num: 25000, denom: 100),
+            incomeAccountGuid: salary
+        )
+        #expect(try Money.subtract(entry.amount, Money(num: 25000, denom: 100)) == .zero)
+        #expect(document.invoiceEntries(forInvoice: invoiceGuid).count == 1)
+
+        let txGuid = try #require(Guid(String(repeating: "f", count: 32)))
+        document.postTransaction(
+            guid: txGuid,
+            date: "2026-03-01",
+            description: "Invoice INV-1001",
+            splits: [
+                (accountGuid: bank, value: try Money(num: 25000, denom: 100), splitGuid: try #require(Guid(String(repeating: "1", count: 32)))),
+                (accountGuid: salary, value: try Money(num: -25000, denom: 100), splitGuid: try #require(Guid(String(repeating: "2", count: 32)))),
+            ]
+        )
+        document.markInvoicePosted(
+            invoiceGuid,
+            postedDate: "2026-03-01",
+            transactionGuid: txGuid,
+            receivableAccountGuid: bank
+        )
+        let posted = try #require(document.invoice(invoiceGuid))
+        #expect(posted.isPosted)
+        #expect(posted.datePosted == "2026-03-01")
+        #expect(posted.postedTransactionGuid == txGuid)
+        #expect(posted.receivableAccountGuid == bank)
+
+        let reparsed = try XMLBookDocument.parse(data: document.serialize())
+        #expect(reparsed.customers().count == 1)
+        #expect(reparsed.invoices().count == 1)
+        #expect(reparsed.invoiceEntries(forInvoice: invoiceGuid).count == 1)
+        let reparsedInvoice = try #require(reparsed.invoice(invoiceGuid))
+        #expect(reparsedInvoice.isPosted)
+        #expect(reparsedInvoice.customerGuid == customerGuid)
+
+        document.deleteCustomer(customerGuid)
+        #expect(document.customer(customerGuid) == nil)
+    }
+
+    @Test("refuses to delete a customer that still has invoices")
+    func customerInUseGuard() throws {
+        let document = try XMLBookDocument.parse(data: loadFixtureData("oracle-mini.gnucash"))
+        let customerGuid = try #require(Guid(String(repeating: "c", count: 32)))
+        document.createCustomer(
+            guid: customerGuid,
+            name: "Acme",
+            customerNumber: "",
+            addressName: "",
+            addressLine1: "",
+            addressLine2: "",
+            phone: "",
+            email: "",
+            notes: "",
+            currencyCode: "USD"
+        )
+        let invoiceGuid = try #require(Guid(String(repeating: "d", count: 32)))
+        document.createInvoice(
+            guid: invoiceGuid,
+            invoiceNumber: "INV-1",
+            customerGuid: customerGuid,
+            dateOpened: "2026-03-01",
+            notes: "",
+            currencyCode: "USD"
+        )
+        #expect(document.customerInUse(customerGuid))
+
+        document.deleteInvoice(invoiceGuid)
+        #expect(document.invoice(invoiceGuid) == nil)
+        #expect(document.customerInUse(customerGuid) == false)
+    }
+
     @Test("builds a fresh document from a snapshot, for the import boundary")
     func buildsFromSnapshot() throws {
         let root = try #require(Guid(String(repeating: "5", count: 32)))

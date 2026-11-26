@@ -22,6 +22,9 @@ struct RootTabView: View {
             Tab("Register", systemImage: "list.bullet.rectangle") {
                 RegisterView(session: session)
             }
+            Tab("Invoices", systemImage: "doc.text") {
+                InvoicesView(session: session)
+            }
             Tab("Receipts", systemImage: "doc.viewfinder") {
                 ReceiptsView()
             }
