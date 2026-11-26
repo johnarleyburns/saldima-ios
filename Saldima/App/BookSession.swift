@@ -91,9 +91,9 @@ final class BookSession {
     }
 
     /// Imports an existing `.gnucash` (XML or SQLite) into this device's
-    /// library. An XML book is materialized as a fresh SQLite working copy
-    /// (SQLite is still the live store today; the XML import boundary is the
-    /// same shape the eventual XML-canonical migration will use), so it opens
+    /// library. XML is the canonical format, so an XML source is copied in
+    /// as-is; a desktop SQLite-dialect source is read through
+    /// `SQLiteBookReader` and materialized as XML, so either way it opens
     /// and edits exactly like a book created on-device.
     func importBook(from source: URL) async {
         let scoped = source.startAccessingSecurityScopedResource()
@@ -108,10 +108,12 @@ final class BookSession {
                 destination = directory.appendingPathComponent("\(stem) \(number).gnucash")
             }
             switch try BookFile.detect(at: source) {
-            case .sqlite:
-                try FileManager.default.copyItem(at: source, to: destination)
             case .xml:
-                let snapshot = try XMLBookReader.read(at: source)
+                // Already the canonical format: just copy it in.
+                try FileManager.default.copyItem(at: source, to: destination)
+            case .sqlite:
+                // Desktop SQLite dialect is an import boundary only.
+                let snapshot = try SQLiteBookReader.read(at: source)
                 try BookImporter.materialize(snapshot, at: destination, ids: ids)
             }
             try await open(url: destination)
@@ -121,11 +123,13 @@ final class BookSession {
     }
 
     /// Builds a gzip GnuCash XML export of the open book for the share sheet.
+    /// The live working file already is gzip GnuCash XML, so exporting is
+    /// just sharing its current bytes -- lossless, unlike rebuilding a
+    /// narrow `BookSnapshot` and re-serializing from scratch.
     func exportXML() async -> (data: Data, filename: String)? {
-        guard let store, let bookURL else { return nil }
+        guard let bookURL else { return nil }
         do {
-            let snapshot = try await store.exportSnapshot()
-            let data = try XMLBookWriter.data(snapshot, ids: ids)
+            let data = try Data(contentsOf: bookURL)
             let stem = bookURL.deletingPathExtension().lastPathComponent
             return (data, "\(stem)-xml.gnucash")
         } catch {

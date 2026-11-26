@@ -41,14 +41,14 @@ struct BookStoreTests {
         #expect(roots.allSatisfy { !$0.hidden && !$0.placeholder })
     }
 
-    @Test("refuses a file that is not SQLite")
-    func notSQLite() throws {
+    @Test("refuses a file that is neither XML nor SQLite")
+    func unknownFormat() throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("not-a-book-\(UUID().uuidString).gnucash")
         try Data("hello".utf8).write(to: url)
         defer { try? FileManager.default.removeItem(at: url) }
 
-        #expect(throws: BookStoreError.notSQLite) {
+        #expect(throws: BookFormatError.unknown) {
             _ = try BookStore(url: url)
         }
     }
