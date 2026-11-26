@@ -31,9 +31,6 @@ struct RootTabView: View {
             Tab("Reports", systemImage: "chart.bar") {
                 ReportsView(session: session)
             }
-            Tab("Settings", systemImage: "gearshape") {
-                SettingsView(session: session)
-            }
         }
         .tint(accent.color)
         .preferredColorScheme(appearance.scheme)

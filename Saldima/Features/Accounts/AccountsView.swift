@@ -66,11 +66,13 @@ struct AccountsView: View {
     private enum SheetTarget: Identifiable {
         case newBook
         case account(Account?)
+        case settings
 
         var id: String {
             switch self {
             case .newBook: "new-book"
             case .account(let account): account?.guid.rawValue ?? "new-account"
+            case .settings: "settings"
             }
         }
     }
@@ -112,9 +114,15 @@ struct AccountsView: View {
                         .accessibilityIdentifier("books.menu")
                     }
 
-                    if session.isOpen {
-                        ToolbarItem(placement: .primaryAction) {
-                            Menu {
+                    ToolbarItem(placement: .primaryAction) {
+                        Menu {
+                            if session.isOpen {
+                                Button {
+                                    sheet = .account(nil)
+                                } label: {
+                                    Label("Add account", systemImage: "plus")
+                                }
+                                .accessibilityIdentifier("accounts.add")
                                 Button("Expand All") { collapsedRaw = "" }
                                 Button("Collapse All") {
                                     collapsedRaw = branchGuids(session.accounts)
@@ -122,19 +130,18 @@ struct AccountsView: View {
                                         .sorted()
                                         .joined(separator: ",")
                                 }
-                            } label: {
-                                Image(systemName: "ellipsis.circle")
+                                Divider()
                             }
-                            .accessibilityIdentifier("accounts.view")
-                        }
-                        ToolbarItem(placement: .primaryAction) {
                             Button {
-                                sheet = .account(nil)
+                                sheet = .settings
                             } label: {
-                                Label("Add account", systemImage: "plus")
+                                Label("Settings", systemImage: "gearshape")
                             }
-                            .accessibilityIdentifier("accounts.add")
+                            .accessibilityIdentifier("accounts.settings")
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
                         }
+                        .accessibilityIdentifier("accounts.view")
                     }
                 }
                 .fileImporter(
@@ -156,6 +163,8 @@ struct AccountsView: View {
                             editing: account,
                             accounts: session.accounts
                         )
+                    case .settings:
+                        SettingsView(session: session)
                     }
                 }
                 .alert(
@@ -377,8 +386,12 @@ private struct AccountEditor: View {
         self.editing = editing
         self.accounts = accounts
         _name = State(initialValue: editing?.name ?? "")
-        _type = State(initialValue: AccountType(rawValue: editing?.accountType ?? "") ?? .asset)
-        _parent = State(initialValue: editing?.parentGuid)
+        let initialType = AccountType(rawValue: editing?.accountType ?? "") ?? .asset
+        _type = State(initialValue: initialType)
+        _parent = State(
+            initialValue: editing?.parentGuid
+                ?? Self.defaultParentGuid(for: initialType, in: accounts)
+        )
         _code = State(initialValue: editing?.code ?? "")
         _details = State(initialValue: editing?.description ?? "")
         _hidden = State(initialValue: editing?.hidden ?? false)
@@ -395,6 +408,10 @@ private struct AccountEditor: View {
                         ForEach(AccountType.allCases, id: \.self) { option in
                             Text(option.rawValue).tag(option)
                         }
+                    }
+                    .onChange(of: type) { _, newType in
+                        guard editing == nil else { return }
+                        parent = Self.defaultParentGuid(for: newType, in: accounts)
                     }
                     Picker("Parent", selection: $parent) {
                         Text("No parent (top level)").tag(Guid?.none)
@@ -455,6 +472,29 @@ private struct AccountEditor: View {
             .filter { !excluded.contains($0.account.guid) }
             .filter { $0.account.accountType != "ROOT" }
             .map { ($0.account.guid, $0.account.name, max(0, $0.depth - 1)) }
+    }
+
+    /// GnuCash's own type hierarchy: the top-level category a type always
+    /// nests under on a real chart of accounts (e.g. a bank account is
+    /// always under Assets, never left at the top level).
+    private static func categoryRootType(for type: AccountType) -> AccountType {
+        switch type {
+        case .asset, .bank, .cash, .receivable: .asset
+        case .liability, .credit, .payable: .liability
+        case .income: .income
+        case .expense: .expense
+        case .equity: .equity
+        }
+    }
+
+    /// The top-level account of the matching category, if the chart has
+    /// one -- used to default a new account's parent instead of leaving it
+    /// at "No parent" for types that are never really top level.
+    private static func defaultParentGuid(for type: AccountType, in accounts: [Account]) -> Guid? {
+        let category = categoryRootType(for: type)
+        return rows(accounts)
+            .first { $0.depth == 0 && AccountType(rawValue: $0.account.accountType) == category }?
+            .account.guid
     }
 
     private func save() {
