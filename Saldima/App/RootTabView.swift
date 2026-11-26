@@ -26,7 +26,7 @@ struct RootTabView: View {
                 InvoicesView(session: session)
             }
             Tab("Receipts", systemImage: "doc.viewfinder") {
-                ReceiptsView()
+                ReceiptsView(session: session)
             }
             Tab("Reports", systemImage: "chart.bar") {
                 ReportsView(session: session)
