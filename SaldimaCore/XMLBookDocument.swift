@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 import Foundation
-#if canImport(FoundationXML)
-import FoundationXML
-#endif
 
 /// A live, mutable GnuCash XML book. Keeps the original parsed element tree
 /// and mutates known objects (accounts, transactions, splits) in place, so
@@ -15,6 +12,12 @@ import FoundationXML
 /// This is `BookStore`'s live model once XML (not SQLite) is the canonical
 /// on-disk format; it never imports SQLite -- `SQLiteBookReader` and
 /// `BookImporter` sit at that import boundary.
+///
+/// The tree is a hand-rolled `XNode`, not Foundation's `XMLDocument`/
+/// `XMLElement`: those DOM classes exist on macOS and on Linux's
+/// swift-corelibs-foundation, but not on iOS, which only ships the SAX
+/// `XMLParser`. A pure-Swift tree (String/Array/Dictionary only) behaves
+/// identically on every platform this app ships to or tests on.
 final class XMLBookDocument {
     struct AccountRow: Sendable, Hashable {
         let guid: Guid
@@ -46,13 +49,13 @@ final class XMLBookDocument {
         let guid: Guid?
     }
 
-    private let document: XMLDocument
-    private let book: XMLElement
-    private var accountIndex: [Guid: XMLElement] = [:]
-    private var transactionIndex: [Guid: XMLElement] = [:]
+    private let root: XNode
+    private let book: XNode
+    private var accountIndex: [Guid: XNode] = [:]
+    private var transactionIndex: [Guid: XNode] = [:]
 
-    private init(document: XMLDocument, book: XMLElement) {
-        self.document = document
+    private init(root: XNode, book: XNode) {
+        self.root = root
         self.book = book
         reindex()
     }
@@ -60,18 +63,19 @@ final class XMLBookDocument {
     // MARK: - Loading
 
     static func parse(data: Data) throws -> XMLBookDocument {
-        let document: XMLDocument
+        guard let xml = String(data: data, encoding: .utf8) else {
+            throw BookFormatError.malformedXML
+        }
+        let root: XNode
         do {
-            document = try XMLDocument(data: data, options: [])
+            root = try parseXMLTree(xml)
         } catch {
             throw BookFormatError.malformedXML
         }
-        guard let root = document.rootElement(),
-              let book = firstChild(root, localName: "book")
-        else {
+        guard let book = findDescendant(root, localName: "book") else {
             throw BookFormatError.malformedXML
         }
-        return XMLBookDocument(document: document, book: book)
+        return XMLBookDocument(root: root, book: book)
     }
 
     /// Builds a fresh document from a format-neutral snapshot (an XML file
@@ -84,39 +88,28 @@ final class XMLBookDocument {
     ) -> XMLBookDocument {
         let currencyCode = snapshot.currencyCode ?? "USD"
         let fraction = snapshot.fraction ?? 100
-        let document = XMLDocument()
-        document.version = "1.0"
-        document.characterEncoding = "utf-8"
 
-        let root = element("gnc-v2")
-        for (prefix, uri) in namespaceURIs {
-            root.addNamespace(XMLNode.namespace(withName: prefix, stringValue: uri) as! XMLNode)
-        }
-        document.setRootElement(root)
+        let root = XNode(name: "#document")
+        let gncRoot = XNode(name: "gnc-v2", attributes: namespaceAttributes)
+        root.addChild(gncRoot)
 
-        let countData = element("gnc:count-data")
-        countData.addAttribute(attribute("cd:type", "book"))
-        countData.stringValue = "1"
-        root.addChild(countData)
+        let countData = leaf("gnc:count-data", "1", attributes: ["cd:type": "book"])
+        gncRoot.addChild(countData)
 
-        let book = element("gnc:book")
-        book.addAttribute(attribute("version", "2.0.0"))
-        root.addChild(book)
+        let book = XNode(name: "gnc:book", attributes: ["version": "2.0.0"])
+        gncRoot.addChild(book)
 
-        let bookId = element("book:id", text: snapshot.bookGuid.rawValue)
-        bookId.addAttribute(attribute("type", "guid"))
-        book.addChild(bookId)
+        book.addChild(leaf("book:id", snapshot.bookGuid.rawValue, attributes: ["type": "guid"]))
 
-        let currencyCommodity = element("gnc:commodity")
-        currencyCommodity.addAttribute(attribute("version", "2.0.0"))
-        currencyCommodity.addChild(element("cmdty:space", text: "CURRENCY"))
-        currencyCommodity.addChild(element("cmdty:id", text: currencyCode))
-        currencyCommodity.addChild(element("cmdty:fraction", text: String(fraction)))
+        let currencyCommodity = XNode(name: "gnc:commodity", attributes: ["version": "2.0.0"])
+        currencyCommodity.addChild(leaf("cmdty:space", "CURRENCY"))
+        currencyCommodity.addChild(leaf("cmdty:id", currencyCode))
+        currencyCommodity.addChild(leaf("cmdty:fraction", String(fraction)))
         book.addChild(currencyCommodity)
 
         let rootAccount = snapshot.accounts.first { $0.type == "ROOT" }
         let rootGuid = rootAccount?.guid ?? ids.guid()
-        book.addChild(accountElement(
+        book.addChild(accountNode(
             guid: rootGuid,
             name: rootAccount?.name ?? "Root Account",
             type: "ROOT",
@@ -124,10 +117,9 @@ final class XMLBookDocument {
             code: "",
             description: "",
             hidden: false,
-            placeholder: false,
-            commodityGuid: nil
+            placeholder: false
         ))
-        book.addChild(accountElement(
+        book.addChild(accountNode(
             guid: templateRootGuid,
             name: "Template Root",
             type: "ROOT",
@@ -135,12 +127,11 @@ final class XMLBookDocument {
             code: "",
             description: "",
             hidden: false,
-            placeholder: false,
-            commodityGuid: nil
+            placeholder: false
         ))
 
         for account in snapshot.accounts where account.guid != rootGuid {
-            book.addChild(accountElement(
+            book.addChild(accountNode(
                 guid: account.guid,
                 name: account.name,
                 type: account.type,
@@ -148,8 +139,7 @@ final class XMLBookDocument {
                 code: account.code,
                 description: account.description,
                 hidden: account.hidden,
-                placeholder: account.placeholder,
-                commodityGuid: nil
+                placeholder: account.placeholder
             ))
         }
 
@@ -157,7 +147,7 @@ final class XMLBookDocument {
             let splits = transaction.splits.map { split in
                 (guid: ids.guid(), accountGuid: split.accountGuid, value: split.value)
             }
-            book.addChild(transactionElement(
+            book.addChild(transactionNode(
                 guid: transaction.guid,
                 date: transaction.date,
                 description: transaction.description,
@@ -165,11 +155,15 @@ final class XMLBookDocument {
             ))
         }
 
-        return XMLBookDocument(document: document, book: book)
+        return XMLBookDocument(root: root, book: book)
     }
 
     func serialize() -> Data {
-        Data(document.xmlString(options: [.nodePrettyPrint]).utf8)
+        var output = "<?xml version=\"1.0\" encoding=\"utf-8\" ?>\n"
+        for child in root.children {
+            serializeNode(child, into: &output)
+        }
+        return Data(output.utf8)
     }
 
     // MARK: - Reading
@@ -177,42 +171,42 @@ final class XMLBookDocument {
     private func reindex() {
         accountIndex.removeAll()
         transactionIndex.removeAll()
-        for element in Self.children(book, localName: "account") {
-            if let guid = Self.guidValue(element, localName: "id") {
-                accountIndex[guid] = element
+        for node in children(book, localName: "account") {
+            if let guid = guidValue(node, localName: "id") {
+                accountIndex[guid] = node
             }
         }
-        for element in Self.children(book, localName: "transaction") {
-            if let guid = Self.guidValue(element, localName: "id") {
-                transactionIndex[guid] = element
+        for node in children(book, localName: "transaction") {
+            if let guid = guidValue(node, localName: "id") {
+                transactionIndex[guid] = node
             }
         }
     }
 
     var bookGuid: Guid? {
-        guard let idNode = Self.firstChild(book, localName: "id") else { return nil }
-        return Guid(Self.textValue(idNode))
+        guard let idNode = firstChild(book, localName: "id") else { return nil }
+        return Guid(decodedText(idNode))
     }
 
     func accounts() -> [AccountRow] {
-        Self.children(book, localName: "account").compactMap(accountRow)
+        children(book, localName: "account").compactMap(accountRow)
     }
 
     func account(_ guid: Guid) -> AccountRow? {
         accountIndex[guid].flatMap(accountRow)
     }
 
-    private func accountRow(_ element: XMLElement) -> AccountRow? {
-        guard let guid = Self.guidValue(element, localName: "id"),
-              let name = Self.firstChild(element, localName: "name").map(Self.textValue),
-              let type = Self.firstChild(element, localName: "type").map(Self.textValue)
+    private func accountRow(_ node: XNode) -> AccountRow? {
+        guard let guid = guidValue(node, localName: "id"),
+              let name = firstChild(node, localName: "name").map(decodedText),
+              let type = firstChild(node, localName: "type").map(decodedText)
         else {
             return nil
         }
-        let parent = Self.guidValue(element, localName: "parent")
-        let code = Self.firstChild(element, localName: "code").map(Self.textValue) ?? ""
-        let description = Self.firstChild(element, localName: "description").map(Self.textValue) ?? ""
-        let (hidden, placeholder) = readFlags(element)
+        let parent = guidValue(node, localName: "parent")
+        let code = firstChild(node, localName: "code").map(decodedText) ?? ""
+        let description = firstChild(node, localName: "description").map(decodedText) ?? ""
+        let (hidden, placeholder) = readFlags(node)
         return AccountRow(
             guid: guid,
             name: name,
@@ -225,15 +219,13 @@ final class XMLBookDocument {
         )
     }
 
-    private func readFlags(_ accountElement: XMLElement) -> (hidden: Bool, placeholder: Bool) {
-        guard let slots = Self.firstChild(accountElement, localName: "slots") else {
-            return (false, false)
-        }
+    private func readFlags(_ accountNode: XNode) -> (hidden: Bool, placeholder: Bool) {
+        guard let slots = firstChild(accountNode, localName: "slots") else { return (false, false) }
         var hidden = false
         var placeholder = false
-        for slot in Self.children(slots, localName: "slot") {
-            guard let key = Self.firstChild(slot, localName: "key").map(Self.textValue) else { continue }
-            let value = Self.firstChild(slot, localName: "value").map(Self.textValue) ?? ""
+        for slot in children(slots, localName: "slot") {
+            guard let key = firstChild(slot, localName: "key").map(decodedText) else { continue }
+            let value = firstChild(slot, localName: "value").map(decodedText) ?? ""
             if key == "hidden" { hidden = value == "true" }
             if key == "placeholder" { placeholder = value == "true" }
         }
@@ -243,22 +235,22 @@ final class XMLBookDocument {
     /// The CURRENCY-namespace commodity GnuCash would show first, preferring
     /// USD when more than one exists (matches the SQLite-era query order).
     func currency() -> CurrencyInfo? {
-        let commodities = Self.children(book, localName: "commodity").filter { commodity in
-            Self.firstChild(commodity, localName: "space").map(Self.textValue) == "CURRENCY"
+        let commodities = children(book, localName: "commodity").filter { commodity in
+            firstChild(commodity, localName: "space").map(decodedText) == "CURRENCY"
         }
         guard !commodities.isEmpty else { return nil }
-        let chosen = commodities.first { Self.firstChild($0, localName: "id").map(Self.textValue) == "USD" }
+        let chosen = commodities.first { firstChild($0, localName: "id").map(decodedText) == "USD" }
             ?? commodities[0]
-        guard let code = Self.firstChild(chosen, localName: "id").map(Self.textValue) else { return nil }
-        let fullName = Self.firstChild(chosen, localName: "name").map(Self.textValue) ?? code
-        let fraction = Self.firstChild(chosen, localName: "fraction").map(Self.textValue).flatMap(Int64.init) ?? 100
+        guard let code = firstChild(chosen, localName: "id").map(decodedText) else { return nil }
+        let fullName = firstChild(chosen, localName: "name").map(decodedText) ?? code
+        let fraction = firstChild(chosen, localName: "fraction").map(decodedText).flatMap(Int64.init) ?? 100
         return CurrencyInfo(code: code, fullName: fullName, fraction: fraction, guid: nil)
     }
 
     /// The transactions, newest first; splits within a transaction keep
     /// document order.
     func transactions() -> [TransactionRow] {
-        Self.children(book, localName: "transaction")
+        children(book, localName: "transaction")
             .compactMap(transactionRow)
             .sorted { $0.date > $1.date || ($0.date == $1.date && $0.guid.rawValue > $1.guid.rawValue) }
     }
@@ -267,21 +259,21 @@ final class XMLBookDocument {
         transactionIndex[guid].flatMap(transactionRow)
     }
 
-    private func transactionRow(_ element: XMLElement) -> TransactionRow? {
-        guard let guid = Self.guidValue(element, localName: "id"),
-              let description = Self.firstChild(element, localName: "description").map(Self.textValue)
+    private func transactionRow(_ node: XNode) -> TransactionRow? {
+        guard let guid = guidValue(node, localName: "id"),
+              let description = firstChild(node, localName: "description").map(decodedText)
         else {
             return nil
         }
-        let date = Self.firstChild(element, localName: "date-posted")
-            .flatMap { Self.firstChild($0, localName: "date") }
-            .map(Self.textValue)
+        let date = firstChild(node, localName: "date-posted")
+            .flatMap { firstChild($0, localName: "date") }
+            .map(decodedText)
             .map { String($0.prefix(10)) } ?? ""
-        let splitsContainer = Self.firstChild(element, localName: "splits")
-        let splits = Self.children(splitsContainer ?? element, localName: "split").compactMap { splitElement -> SplitRow? in
-            guard let account = Self.guidValue(splitElement, localName: "account"),
-                  let valueText = Self.firstChild(splitElement, localName: "value").map(Self.textValue),
-                  let value = Self.rational(valueText)
+        let splitsContainer = firstChild(node, localName: "splits")
+        let splits = children(splitsContainer ?? node, localName: "split").compactMap { splitNode -> SplitRow? in
+            guard let account = guidValue(splitNode, localName: "account"),
+                  let valueText = firstChild(splitNode, localName: "value").map(decodedText),
+                  let value = rational(valueText)
             else {
                 return nil
             }
@@ -317,7 +309,7 @@ final class XMLBookDocument {
         placeholder: Bool,
         commodityGuid: Guid?
     ) -> AccountRow {
-        let newElement = Self.accountElement(
+        let newNode = Self.accountNode(
             guid: guid,
             name: name,
             type: type,
@@ -325,16 +317,15 @@ final class XMLBookDocument {
             code: code,
             description: description,
             hidden: hidden,
-            placeholder: placeholder,
-            commodityGuid: commodityGuid
+            placeholder: placeholder
         )
-        if let firstTransaction = Self.children(book, localName: "transaction").first {
-            book.insertChild(newElement, at: firstTransaction.index)
+        if let firstTransaction = children(book, localName: "transaction").first {
+            book.insertChild(newNode, at: firstTransaction.indexInParent ?? book.children.count)
         } else {
-            book.addChild(newElement)
+            book.addChild(newNode)
         }
-        accountIndex[guid] = newElement
-        return accountRow(newElement)!
+        accountIndex[guid] = newNode
+        return accountRow(newNode)!
     }
 
     func updateAccount(
@@ -347,39 +338,37 @@ final class XMLBookDocument {
         hidden: Bool,
         placeholder: Bool
     ) {
-        guard let element = accountIndex[guid] else { return }
-        Self.setChildText(element, localName: "name", prefix: "act", value: name)
-        Self.setChildText(element, localName: "type", prefix: "act", value: type)
-        Self.setChildText(element, localName: "code", prefix: "act", value: code)
-        Self.setChildText(element, localName: "description", prefix: "act", value: description)
+        guard let node = accountIndex[guid] else { return }
+        setChildText(node, localName: "name", tag: "act:name", value: name)
+        setChildText(node, localName: "type", tag: "act:type", value: type)
+        setChildText(node, localName: "code", tag: "act:code", value: code)
+        setChildText(node, localName: "description", tag: "act:description", value: description)
 
-        if let existingParent = Self.firstChild(element, localName: "parent") {
+        if let existingParent = firstChild(node, localName: "parent") {
             if let parentGuid {
-                existingParent.stringValue = parentGuid.rawValue
+                existingParent.text = escapeXml(parentGuid.rawValue)
             } else {
                 existingParent.detach()
             }
         } else if let parentGuid {
-            let parentNode = Self.element("act:parent", text: parentGuid.rawValue)
-            parentNode.addAttribute(Self.attribute("type", "guid"))
-            element.addChild(parentNode)
+            node.addChild(leaf("act:parent", parentGuid.rawValue, attributes: ["type": "guid"]))
         }
 
-        let slots = Self.firstChild(element, localName: "slots") ?? {
-            let created = Self.element("act:slots")
-            element.addChild(created)
+        let slots = firstChild(node, localName: "slots") ?? {
+            let created = XNode(name: "act:slots")
+            node.addChild(created)
             return created
         }()
-        Self.setBooleanSlot(slots, key: "hidden", value: hidden)
-        Self.setBooleanSlot(slots, key: "placeholder", value: placeholder)
-        if Self.children(slots, localName: "slot").isEmpty {
+        setBooleanSlot(slots, key: "hidden", value: hidden)
+        setBooleanSlot(slots, key: "placeholder", value: placeholder)
+        if children(slots, localName: "slot").isEmpty {
             slots.detach()
         }
     }
 
     func deleteAccount(_ guid: Guid) {
-        guard let element = accountIndex[guid] else { return }
-        element.detach()
+        guard let node = accountIndex[guid] else { return }
+        node.detach()
         accountIndex.removeValue(forKey: guid)
     }
 
@@ -402,48 +391,38 @@ final class XMLBookDocument {
         description: String,
         splits: [(accountGuid: Guid, value: Money, splitGuid: Guid)]
     ) -> TransactionRow {
-        let element = Self.transactionElement(
+        let node = Self.transactionNode(
             guid: guid,
             date: date,
             description: description,
             splits: splits.map { (guid: $0.splitGuid, accountGuid: $0.accountGuid, value: $0.value) }
         )
-        book.addChild(element)
-        transactionIndex[guid] = element
-        return transactionRow(element)!
+        book.addChild(node)
+        transactionIndex[guid] = node
+        return transactionRow(node)!
     }
 
     func deleteTransaction(_ guid: Guid) {
-        guard let element = transactionIndex[guid] else { return }
-        element.detach()
+        guard let node = transactionIndex[guid] else { return }
+        node.detach()
         transactionIndex.removeValue(forKey: guid)
     }
 
-    // MARK: - XML helpers
+    // MARK: - Building new nodes
 
-    private static let namespaceURIs: [(String, String)] = [
-        ("gnc", "http://www.gnucash.org/XML/gnc"),
-        ("act", "http://www.gnucash.org/XML/act"),
-        ("book", "http://www.gnucash.org/XML/book"),
-        ("cd", "http://www.gnucash.org/XML/cd"),
-        ("cmdty", "http://www.gnucash.org/XML/cmdty"),
-        ("slot", "http://www.gnucash.org/XML/slot"),
-        ("split", "http://www.gnucash.org/XML/split"),
-        ("trn", "http://www.gnucash.org/XML/trn"),
-        ("ts", "http://www.gnucash.org/XML/ts"),
+    private static let namespaceAttributes: [String: String] = [
+        "xmlns:gnc": "http://www.gnucash.org/XML/gnc",
+        "xmlns:act": "http://www.gnucash.org/XML/act",
+        "xmlns:book": "http://www.gnucash.org/XML/book",
+        "xmlns:cd": "http://www.gnucash.org/XML/cd",
+        "xmlns:cmdty": "http://www.gnucash.org/XML/cmdty",
+        "xmlns:slot": "http://www.gnucash.org/XML/slot",
+        "xmlns:split": "http://www.gnucash.org/XML/split",
+        "xmlns:trn": "http://www.gnucash.org/XML/trn",
+        "xmlns:ts": "http://www.gnucash.org/XML/ts",
     ]
 
-    private static func element(_ name: String) -> XMLElement { XMLElement(name: name) }
-
-    private static func element(_ name: String, text: String) -> XMLElement {
-        XMLElement(name: name, stringValue: text)
-    }
-
-    private static func attribute(_ name: String, _ value: String) -> XMLNode {
-        XMLNode.attribute(withName: name, stringValue: value) as! XMLNode
-    }
-
-    private static func accountElement(
+    private static func accountNode(
         guid: Guid,
         name: String,
         type: String,
@@ -451,44 +430,36 @@ final class XMLBookDocument {
         code: String,
         description: String,
         hidden: Bool,
-        placeholder: Bool,
-        commodityGuid: Guid?
-    ) -> XMLElement {
-        let accountElement = element("gnc:account")
-        accountElement.addAttribute(attribute("version", "2.0.0"))
-        accountElement.addChild(element("act:name", text: name))
-        let idNode = element("act:id", text: guid.rawValue)
-        idNode.addAttribute(attribute("type", "guid"))
-        accountElement.addChild(idNode)
-        accountElement.addChild(element("act:type", text: type))
+        placeholder: Bool
+    ) -> XNode {
+        let node = XNode(name: "gnc:account", attributes: ["version": "2.0.0"])
+        node.addChild(leaf("act:name", name))
+        node.addChild(leaf("act:id", guid.rawValue, attributes: ["type": "guid"]))
+        node.addChild(leaf("act:type", type))
         if let parentGuid {
-            let parentNode = element("act:parent", text: parentGuid.rawValue)
-            parentNode.addAttribute(attribute("type", "guid"))
-            accountElement.addChild(parentNode)
+            node.addChild(leaf("act:parent", parentGuid.rawValue, attributes: ["type": "guid"]))
         }
         if hidden || placeholder {
-            let slots = element("act:slots")
-            if placeholder { slots.addChild(booleanSlotElement(key: "placeholder")) }
-            if hidden { slots.addChild(booleanSlotElement(key: "hidden")) }
-            accountElement.addChild(slots)
+            let slots = XNode(name: "act:slots")
+            if placeholder { slots.addChild(booleanSlotNode(key: "placeholder")) }
+            if hidden { slots.addChild(booleanSlotNode(key: "hidden")) }
+            node.addChild(slots)
         }
-        accountElement.addChild(element("act:code", text: code))
-        accountElement.addChild(element("act:description", text: description))
-        return accountElement
+        node.addChild(leaf("act:code", code))
+        node.addChild(leaf("act:description", description))
+        return node
     }
 
-    private static func booleanSlotElement(key: String) -> XMLElement {
-        let slot = element("slot")
-        slot.addChild(element("slot:key", text: key))
-        let value = element("slot:value", text: "true")
-        value.addAttribute(attribute("type", "string"))
-        slot.addChild(value)
+    private static func booleanSlotNode(key: String) -> XNode {
+        let slot = XNode(name: "slot")
+        slot.addChild(leaf("slot:key", key))
+        slot.addChild(leaf("slot:value", "true", attributes: ["type": "string"]))
         return slot
     }
 
-    private static func setBooleanSlot(_ slots: XMLElement, key: String, value: Bool) {
+    private func setBooleanSlot(_ slots: XNode, key: String, value: Bool) {
         let existing = children(slots, localName: "slot").first {
-            firstChild($0, localName: "key").map(textValue) == key
+            firstChild($0, localName: "key").map(decodedText) == key
         }
         if !value {
             existing?.detach()
@@ -496,89 +467,322 @@ final class XMLBookDocument {
         }
         if let existing {
             if let valueNode = firstChild(existing, localName: "value") {
-                valueNode.stringValue = "true"
+                valueNode.text = "true"
             }
             return
         }
-        slots.addChild(booleanSlotElement(key: key))
+        slots.addChild(Self.booleanSlotNode(key: key))
     }
 
-    private static func setChildText(_ parent: XMLElement, localName: String, prefix: String, value: String) {
+    private func setChildText(_ parent: XNode, localName: String, tag: String, value: String) {
         if let existing = firstChild(parent, localName: localName) {
-            existing.setChildren(nil)
-            existing.stringValue = value
+            existing.children = []
+            existing.text = escapeXml(value)
             return
         }
-        parent.addChild(element("\(prefix):\(localName)", text: value))
+        parent.addChild(leaf(tag, value))
     }
 
-    private static func transactionElement(
+    private static func transactionNode(
         guid: Guid,
         date: String,
         description: String,
         splits: [(guid: Guid, accountGuid: Guid, value: Money)]
-    ) -> XMLElement {
-        let transactionElement = element("gnc:transaction")
-        transactionElement.addAttribute(attribute("version", "2.0.0"))
-        let idNode = element("trn:id", text: guid.rawValue)
-        idNode.addAttribute(attribute("type", "guid"))
-        transactionElement.addChild(idNode)
+    ) -> XNode {
+        let node = XNode(name: "gnc:transaction", attributes: ["version": "2.0.0"])
+        node.addChild(leaf("trn:id", guid.rawValue, attributes: ["type": "guid"]))
 
-        let postedDate = element("trn:date-posted")
-        postedDate.addChild(element("ts:date", text: "\(date) 00:00:00 +0000"))
-        transactionElement.addChild(postedDate)
-        let enteredDate = element("trn:date-entered")
-        enteredDate.addChild(element("ts:date", text: "\(date) 00:00:00 +0000"))
-        transactionElement.addChild(enteredDate)
+        let postedDate = XNode(name: "trn:date-posted")
+        postedDate.addChild(leaf("ts:date", "\(date) 00:00:00 +0000"))
+        node.addChild(postedDate)
+        let enteredDate = XNode(name: "trn:date-entered")
+        enteredDate.addChild(leaf("ts:date", "\(date) 00:00:00 +0000"))
+        node.addChild(enteredDate)
 
-        transactionElement.addChild(element("trn:description", text: description))
+        node.addChild(leaf("trn:description", description))
 
-        let splitsElement = element("trn:splits")
+        let splitsNode = XNode(name: "trn:splits")
         for split in splits {
-            let splitElement = element("trn:split")
-            let splitId = element("split:id", text: split.guid.rawValue)
-            splitId.addAttribute(attribute("type", "guid"))
-            splitElement.addChild(splitId)
-            splitElement.addChild(element("split:reconciled-state", text: "n"))
+            let splitNode = XNode(name: "trn:split")
+            splitNode.addChild(leaf("split:id", split.guid.rawValue, attributes: ["type": "guid"]))
+            splitNode.addChild(leaf("split:reconciled-state", "n"))
             let valueText = "\(split.value.num)/\(split.value.denom)"
-            splitElement.addChild(element("split:value", text: valueText))
-            splitElement.addChild(element("split:quantity", text: valueText))
-            let accountNode = element("split:account", text: split.accountGuid.rawValue)
-            accountNode.addAttribute(attribute("type", "guid"))
-            splitElement.addChild(accountNode)
-            splitsElement.addChild(splitElement)
+            splitNode.addChild(leaf("split:value", valueText))
+            splitNode.addChild(leaf("split:quantity", valueText))
+            splitNode.addChild(leaf("split:account", split.accountGuid.rawValue, attributes: ["type": "guid"]))
+            splitsNode.addChild(splitNode)
         }
-        transactionElement.addChild(splitsElement)
-        return transactionElement
+        node.addChild(splitsNode)
+        return node
     }
 
-    private static func localName(_ name: String?) -> String {
-        guard let name else { return "" }
+    // MARK: - Tree helpers
+
+    private func localName(_ name: String) -> String {
         if let colon = name.lastIndex(of: ":") {
             return String(name[name.index(after: colon)...])
         }
         return name
     }
 
-    private static func children(_ element: XMLElement, localName name: String) -> [XMLElement] {
-        (element.children ?? []).compactMap { $0 as? XMLElement }.filter { localName($0.name) == name }
+    private func children(_ node: XNode, localName name: String) -> [XNode] {
+        node.children.filter { localName($0.name) == name }
     }
 
-    private static func firstChild(_ element: XMLElement, localName name: String) -> XMLElement? {
-        children(element, localName: name).first
+    private func firstChild(_ node: XNode, localName name: String) -> XNode? {
+        children(node, localName: name).first
     }
 
-    private static func textValue(_ element: XMLElement) -> String {
-        (element.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    private func decodedText(_ node: XNode) -> String {
+        decodeXmlEntities(node.text).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static func guidValue(_ element: XMLElement, localName name: String) -> Guid? {
-        firstChild(element, localName: name).flatMap { Guid(textValue($0)) }
+    private func guidValue(_ node: XNode, localName name: String) -> Guid? {
+        firstChild(node, localName: name).flatMap { Guid(decodedText($0)) }
     }
 
-    private static func rational(_ text: String) -> Money? {
+    private func rational(_ text: String) -> Money? {
         let parts = text.split(separator: "/", omittingEmptySubsequences: false)
         guard parts.count == 2, let num = Int64(parts[0]), let denom = Int64(parts[1]) else { return nil }
         return try? Money(num: num, denom: denom)
+    }
+}
+
+private func findDescendant(_ node: XNode, localName name: String) -> XNode? {
+    for child in node.children {
+        if local(child.name) == name { return child }
+        if let found = findDescendant(child, localName: name) { return found }
+    }
+    return nil
+}
+
+private func local(_ name: String) -> String {
+    if let colon = name.lastIndex(of: ":") {
+        return String(name[name.index(after: colon)...])
+    }
+    return name
+}
+
+private func leaf(_ name: String, _ value: String, attributes: [String: String] = [:]) -> XNode {
+    let node = XNode(name: name, attributes: attributes)
+    node.text = escapeXml(value)
+    return node
+}
+
+private func escapeXml(_ value: String) -> String {
+    value
+        .replacingOccurrences(of: "&", with: "&amp;")
+        .replacingOccurrences(of: "<", with: "&lt;")
+        .replacingOccurrences(of: ">", with: "&gt;")
+        .replacingOccurrences(of: "\"", with: "&quot;")
+}
+
+private func decodeXmlEntities(_ raw: String) -> String {
+    guard raw.contains("&") else { return raw }
+    var result = ""
+    var remaining = Substring(raw)
+    while let ampersand = remaining.firstIndex(of: "&") {
+        result += remaining[remaining.startIndex..<ampersand]
+        let afterAmp = remaining.index(after: ampersand)
+        guard let semicolon = remaining[afterAmp...].firstIndex(of: ";") else {
+            result += remaining[ampersand...]
+            remaining = Substring("")
+            break
+        }
+        let entity = remaining[afterAmp..<semicolon]
+        switch entity {
+        case "amp": result += "&"
+        case "lt": result += "<"
+        case "gt": result += ">"
+        case "quot": result += "\""
+        case "apos": result += "'"
+        default:
+            if entity.hasPrefix("#x") || entity.hasPrefix("#X"),
+               let code = UInt32(entity.dropFirst(2), radix: 16),
+               let scalar = Unicode.Scalar(code)
+            {
+                result += String(Character(scalar))
+            } else if entity.hasPrefix("#"), let code = UInt32(entity.dropFirst()), let scalar = Unicode.Scalar(code) {
+                result += String(Character(scalar))
+            } else {
+                result += remaining[ampersand...semicolon]
+            }
+        }
+        remaining = remaining[remaining.index(after: semicolon)...]
+    }
+    result += remaining
+    return result
+}
+
+/// A hand-rolled XML element/text node. `.text` always holds pre-escaped
+/// content (matching what was parsed, or freshly escaped when this engine
+/// sets it), so the serializer never needs to -- and never double-escapes
+/// -- untouched nodes it is only passing through.
+private final class XNode {
+    let name: String
+    var attributes: [String: String]
+    var children: [XNode] = []
+    var text: String = ""
+    weak var parent: XNode?
+
+    init(name: String, attributes: [String: String] = [:]) {
+        self.name = name
+        self.attributes = attributes
+    }
+
+    func addChild(_ child: XNode) {
+        child.parent = self
+        children.append(child)
+    }
+
+    func insertChild(_ child: XNode, at index: Int) {
+        child.parent = self
+        let clamped = max(0, min(index, children.count))
+        children.insert(child, at: clamped)
+    }
+
+    func detach() {
+        if let currentParent = parent, let position = currentParent.children.firstIndex(where: { $0 === self }) {
+            currentParent.children.remove(at: position)
+        }
+        parent = nil
+    }
+
+    var indexInParent: Int? {
+        parent?.children.firstIndex(where: { $0 === self })
+    }
+}
+
+private enum XMLTreeParseError: Error {
+    case malformed
+}
+
+/// A deliberately small, pure-Swift XML parser (no platform-specific DOM
+/// API): elements, attributes, self-closing tags, comments and processing
+/// instructions. GnuCash writes no CDATA or DTD in books, but CDATA is
+/// still handled for robustness against hand-edited or third-party files.
+private func parseXMLTree(_ xml: String) throws -> XNode {
+    let root = XNode(name: "#document")
+    var stack: [XNode] = [root]
+    var index = xml.startIndex
+    let end = xml.endIndex
+
+    func top() throws -> XNode {
+        guard let node = stack.last else { throw XMLTreeParseError.malformed }
+        return node
+    }
+
+    while index < end {
+        guard let openRange = xml.range(of: "<", range: index..<end) else {
+            let trailing = String(xml[index..<end])
+            if !trailing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                try top().text += trailing
+            }
+            break
+        }
+        if openRange.lowerBound > index {
+            try top().text += String(xml[index..<openRange.lowerBound])
+        }
+        let open = openRange.lowerBound
+
+        if xml[open...].hasPrefix("<!--") {
+            guard let closeRange = xml.range(of: "-->", range: open..<end) else {
+                throw XMLTreeParseError.malformed
+            }
+            index = closeRange.upperBound
+            continue
+        }
+        if xml[open...].hasPrefix("<?") {
+            guard let closeRange = xml.range(of: "?>", range: open..<end) else {
+                throw XMLTreeParseError.malformed
+            }
+            index = closeRange.upperBound
+            continue
+        }
+        if xml[open...].hasPrefix("<![CDATA[") {
+            guard let closeRange = xml.range(of: "]]>", range: open..<end) else {
+                throw XMLTreeParseError.malformed
+            }
+            let contentStart = xml.index(open, offsetBy: 9)
+            try top().text += escapeXml(String(xml[contentStart..<closeRange.lowerBound]))
+            index = closeRange.upperBound
+            continue
+        }
+
+        guard let tagEnd = xml.range(of: ">", range: open..<end) else {
+            throw XMLTreeParseError.malformed
+        }
+        let bodyStart = xml.index(after: open)
+        let rawBody = xml[bodyStart..<tagEnd.lowerBound]
+        let body = rawBody.trimmingCharacters(in: .whitespacesAndNewlines)
+        index = tagEnd.upperBound
+
+        if body.hasPrefix("/") {
+            let name = body.dropFirst().trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let closed = stack.popLast(), closed.name == name else {
+                throw XMLTreeParseError.malformed
+            }
+            continue
+        }
+
+        let selfClosing = body.hasSuffix("/")
+        let content = selfClosing ? String(body.dropLast()).trimmingCharacters(in: .whitespacesAndNewlines) : body
+        let (name, attributes) = parseTag(content)
+        let node = XNode(name: name, attributes: attributes)
+        try top().addChild(node)
+        if !selfClosing {
+            stack.append(node)
+        }
+    }
+
+    guard stack.count == 1 else { throw XMLTreeParseError.malformed }
+    return root
+}
+
+private func parseTag(_ content: String) -> (name: String, attributes: [String: String]) {
+    guard let spaceIndex = content.firstIndex(where: { $0.isWhitespace }) else {
+        return (content, [:])
+    }
+    let name = String(content[content.startIndex..<spaceIndex])
+    let rest = content[content.index(after: spaceIndex)...]
+    return (name, parseAttributes(String(rest)))
+}
+
+private func parseAttributes(_ text: String) -> [String: String] {
+    var result: [String: String] = [:]
+    var remaining = Substring(text)
+    while let equals = remaining.firstIndex(of: "=") {
+        let key = remaining[remaining.startIndex..<equals].trimmingCharacters(in: .whitespacesAndNewlines)
+        remaining = remaining[remaining.index(after: equals)...]
+        guard let quoteStart = remaining.firstIndex(where: { $0 == "\"" || $0 == "'" }) else { break }
+        let quoteChar = remaining[quoteStart]
+        let valueStart = remaining.index(after: quoteStart)
+        guard let quoteEnd = remaining[valueStart...].firstIndex(of: quoteChar) else { break }
+        if !key.isEmpty {
+            result[key] = String(remaining[valueStart..<quoteEnd])
+        }
+        remaining = remaining[remaining.index(after: quoteEnd)...]
+    }
+    return result
+}
+
+/// Renders the (possibly mutated) tree back to XML. Nodes this engine never
+/// touched are emitted exactly as parsed; mutated/created nodes carry
+/// pre-escaped text, so no node is ever escaped twice.
+private func serializeNode(_ node: XNode, into output: inout String) {
+    output += "<\(node.name)"
+    for (key, value) in node.attributes.sorted(by: { $0.key < $1.key }) {
+        output += " \(key)=\"\(escapeXml(value))\""
+    }
+    if !node.children.isEmpty {
+        output += ">"
+        for child in node.children {
+            serializeNode(child, into: &output)
+        }
+        output += "</\(node.name)>"
+    } else if node.text.isEmpty {
+        output += "/>"
+    } else {
+        output += ">\(node.text)</\(node.name)>"
     }
 }
