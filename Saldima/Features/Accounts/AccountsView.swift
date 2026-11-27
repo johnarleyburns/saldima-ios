@@ -70,6 +70,7 @@ struct AccountsView: View {
         case settings
         case register
         case reports
+        case scheduled
 
         var id: String {
             switch self {
@@ -78,6 +79,7 @@ struct AccountsView: View {
             case .settings: "settings"
             case .register: "register"
             case .reports: "reports"
+            case .scheduled: "scheduled"
             }
         }
     }
@@ -148,6 +150,12 @@ struct AccountsView: View {
                                     Label("Reports", systemImage: "chart.bar")
                                 }
                                 .accessibilityIdentifier("accounts.reports")
+                                Button {
+                                    sheet = .scheduled
+                                } label: {
+                                    Label("Scheduled", systemImage: "calendar.badge.clock")
+                                }
+                                .accessibilityIdentifier("accounts.scheduled")
                                 Divider()
                             }
                             Button {
@@ -187,6 +195,8 @@ struct AccountsView: View {
                         RegisterView(session: session)
                     case .reports:
                         ReportsView(session: session)
+                    case .scheduled:
+                        ScheduledTransactionsView(session: session)
                     }
                 }
                 .alert(

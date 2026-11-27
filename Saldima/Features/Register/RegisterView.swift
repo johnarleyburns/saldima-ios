@@ -20,7 +20,7 @@ struct RegisterView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if session.transactions.isEmpty {
+                if session.transactions.isEmpty && session.dueScheduledInstances.isEmpty {
                     ContentUnavailableView {
                         Label("No transactions", systemImage: "list.bullet.rectangle")
                     } description: {
@@ -30,10 +30,17 @@ struct RegisterView: View {
                             .buttonStyle(.glassProminent)
                             .disabled(!session.isOpen)
                     }
-                } else if filteredTransactions.isEmpty {
+                } else if filteredTransactions.isEmpty && session.dueScheduledInstances.isEmpty {
                     ContentUnavailableView.search(text: searchText)
                 } else {
                     List {
+                        if !session.dueScheduledInstances.isEmpty {
+                            Section("Scheduled") {
+                                ForEach(session.dueScheduledInstances) { instance in
+                                    dueInstanceRow(instance)
+                                }
+                            }
+                        }
                         ForEach(filteredTransactions) { transaction in
                             VStack(alignment: .leading, spacing: 6) {
                                 HStack {
@@ -127,6 +134,46 @@ struct RegisterView: View {
 
     private func name(of guid: Guid) -> String {
         session.accountOptions().first { $0.guid == guid }?.name ?? "Account"
+    }
+
+    /// "Check on open"'s review surface: a due or soon-due scheduled
+    /// instance. `needsApproval`/`reminder` offer Approve/Skip (skip is
+    /// permanent -- there is no deferred/postponed list); `autoPostNotify`
+    /// is display-only, since it has already been posted automatically.
+    @ViewBuilder
+    private func dueInstanceRow(_ instance: DueScheduledInstance) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(instance.name)
+                    .font(.subheadline.bold())
+                Text(dueInstanceLabel(instance))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if instance.action == .needsApproval || instance.action == .reminder {
+                Button("Approve") {
+                    Task { await session.approve(instance) }
+                }
+                .buttonStyle(.bordered)
+                Button("Skip") {
+                    Task { await session.skip(instance) }
+                }
+                .buttonStyle(.bordered)
+                .tint(.orange)
+            }
+        }
+    }
+
+    private func dueInstanceLabel(_ instance: DueScheduledInstance) -> String {
+        switch instance.action {
+        case .autoPost, .autoPostNotify:
+            return "Posted automatically on \(instance.date)"
+        case .needsApproval:
+            return "Due \(instance.date)"
+        case .reminder:
+            return "Coming up \(instance.date)"
+        }
     }
 }
 

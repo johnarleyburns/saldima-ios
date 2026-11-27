@@ -25,6 +25,12 @@ final class BookSession {
     private(set) var invoices: [Invoice] = []
     private(set) var vendors: [Vendor] = []
     private(set) var bills: [Bill] = []
+    private(set) var scheduledTransactions: [ScheduledTransaction] = []
+    /// Due (or soon-due) instances as of the last refresh -- "check on
+    /// open": recomputed, and any auto-create schedules posted, every time
+    /// `refresh()` runs (on open and after every mutation). No background
+    /// job exists.
+    private(set) var dueScheduledInstances: [DueScheduledInstance] = []
     var lastError: String?
 
     private let ids: any IDGenerator
@@ -288,6 +294,77 @@ final class BookSession {
         guard let store else { return false }
         do {
             try await store.unvoidTransaction(guid)
+            try await refresh()
+            return true
+        } catch {
+            lastError = Self.message(for: error)
+            return false
+        }
+    }
+
+    // MARK: - Scheduled transactions
+
+    @discardableResult
+    func saveScheduledTransaction(_ draft: ScheduledTransactionDraft) async -> Bool {
+        guard let store else { return false }
+        do {
+            try await store.createScheduledTransaction(draft, ids: ids)
+            try await refresh()
+            return true
+        } catch {
+            lastError = Self.message(for: error)
+            return false
+        }
+    }
+
+    @discardableResult
+    func updateScheduledTransaction(_ guid: Guid, with draft: ScheduledTransactionEditDraft) async -> Bool {
+        guard let store else { return false }
+        do {
+            try await store.updateScheduledTransaction(guid, with: draft)
+            try await refresh()
+            return true
+        } catch {
+            lastError = Self.message(for: error)
+            return false
+        }
+    }
+
+    @discardableResult
+    func delete(_ scheduled: ScheduledTransaction) async -> Bool {
+        guard let store else { return false }
+        do {
+            try await store.deleteScheduledTransaction(scheduled.guid)
+            try await refresh()
+            return true
+        } catch {
+            lastError = Self.message(for: error)
+            return false
+        }
+    }
+
+    /// Posts a real transaction from the schedule's template splits and
+    /// advances it past the instance's own date -- not "today".
+    @discardableResult
+    func approve(_ instance: DueScheduledInstance) async -> Bool {
+        guard let store else { return false }
+        do {
+            try await store.approveScheduledInstance(instance.scheduledTransactionGuid, date: instance.date, ids: ids)
+            try await refresh()
+            return true
+        } catch {
+            lastError = Self.message(for: error)
+            return false
+        }
+    }
+
+    /// Advances the schedule past this instance's date without posting
+    /// anything -- **permanently**: there is no deferred/postponed list.
+    @discardableResult
+    func skip(_ instance: DueScheduledInstance) async -> Bool {
+        guard let store else { return false }
+        do {
+            try await store.skipScheduledInstance(instance.scheduledTransactionGuid, date: instance.date)
             try await refresh()
             return true
         } catch {
@@ -647,6 +724,15 @@ final class BookSession {
 
     private func refresh() async throws {
         guard let store else { return }
+        // "Check on open": every refresh (on open, and after every
+        // mutation) recomputes due scheduled-transaction instances and
+        // auto-posts the ones configured to auto-create, before anything
+        // else here reads accounts/balances/transactions -- so a freshly
+        // auto-posted instance is reflected in this same refresh.
+        dueScheduledInstances = try await store.processDueScheduledTransactions(
+            asOf: Self.isoDate(Date()),
+            ids: ids
+        )
         accounts = try await store.accounts()
         balances = try await store.balances()
         transactions = try await store.transactions()
@@ -654,6 +740,7 @@ final class BookSession {
         invoices = try await store.invoices()
         vendors = try await store.vendors()
         bills = try await store.bills()
+        scheduledTransactions = try await store.scheduledTransactions()
         totals = try AccountRollup.totals(accounts, balances: balances)
         if let currency = try await store.bookCurrency() {
             fraction = currency.fraction
@@ -760,6 +847,18 @@ final class BookSession {
             return "This transaction is already voided."
         case JournalError.notVoided:
             return "This transaction isn't voided."
+        case ScheduledTransactionError.invalidName:
+            return "Enter a name of 200 characters or fewer."
+        case ScheduledTransactionError.tooFewSplits:
+            return "Use at least two template splits."
+        case ScheduledTransactionError.unbalanced:
+            return "The template splits must sum to zero."
+        case ScheduledTransactionError.unknownAccount:
+            return "Choose an account that still exists."
+        case ScheduledTransactionError.invalidRecurrence:
+            return "Enter a valid start date and recurrence."
+        case ScheduledTransactionError.unknownScheduledTransaction:
+            return "That schedule is no longer in the book."
         default:
             return error.localizedDescription
         }
