@@ -73,6 +73,7 @@ public struct StoredSplit: Sendable, Hashable, Identifiable {
     public let accountGuid: Guid
     public let value: Money
     public let guid: Guid?
+    public let memo: String
     /// `"n"` not reconciled, `"c"` cleared, `"y"` reconciled, `"v"` voided -- GnuCash's own codes.
     public let reconcileState: String
     /// Set only once `reconcileState` is `"y"`; `YYYY-MM-DD HH:MM:SS +ZZZZ`.
@@ -86,6 +87,7 @@ public struct StoredSplit: Sendable, Hashable, Identifiable {
         accountGuid: Guid,
         value: Money,
         guid: Guid? = nil,
+        memo: String = "",
         reconcileState: String = "n",
         reconcileDate: String? = nil,
         voidFormerValue: Money? = nil
@@ -93,6 +95,7 @@ public struct StoredSplit: Sendable, Hashable, Identifiable {
         self.accountGuid = accountGuid
         self.value = value
         self.guid = guid
+        self.memo = memo
         self.reconcileState = reconcileState
         self.reconcileDate = reconcileDate
         self.voidFormerValue = voidFormerValue
@@ -682,6 +685,7 @@ public actor BookStore {
                         accountGuid: $0.accountGuid,
                         value: $0.value,
                         guid: $0.guid,
+                        memo: $0.memo,
                         reconcileState: $0.reconcileState,
                         reconcileDate: $0.reconcileDate,
                         voidFormerValue: $0.voidFormerValue

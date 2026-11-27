@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -381,6 +382,10 @@ private struct AccountEditor: View {
     @State private var placeholder: Bool
     @State private var confirmingDelete = false
     @State private var reconciling = false
+    @State private var exportDocument: RegisterExportDocument?
+    @State private var exportFilename = ""
+    @State private var exportContentType = UTType.plainText
+    @State private var exporting = false
 
     init(session: BookSession, editing: Account?, accounts: [Account]) {
         self.session = session
@@ -438,6 +443,10 @@ private struct AccountEditor: View {
                         .accessibilityIdentifier("account.reconcile")
                     }
                     Section {
+                        Button("Export QIF") { exportRegister(extension: "qif") }
+                        Button("Export CSV") { exportRegister(extension: "csv") }
+                    }
+                    Section {
                         Button("Delete account", role: .destructive) {
                             confirmingDelete = true
                         }
@@ -460,6 +469,14 @@ private struct AccountEditor: View {
                 if let editing {
                     ReconcileView(session: session, account: editing)
                 }
+            }
+            .fileExporter(
+                isPresented: $exporting,
+                document: exportDocument,
+                contentType: exportContentType,
+                defaultFilename: exportFilename
+            ) { _ in
+                exportDocument = nil
             }
             .confirmationDialog(
                 "Delete this account?",
@@ -524,6 +541,41 @@ private struct AccountEditor: View {
                 dismiss()
             }
         }
+    }
+
+    private func exportRegister(extension fileExtension: String) {
+        guard let editing else { return }
+        let result = fileExtension == "qif"
+            ? session.exportQif(accountGuid: editing.guid)
+            : session.exportCsv(accountGuid: editing.guid)
+        guard let result else { return }
+        exportDocument = RegisterExportDocument(data: result.data)
+        exportFilename = result.filename
+        exportContentType = UTType(filenameExtension: fileExtension) ?? .plainText
+        exporting = true
+    }
+}
+
+/// Carries a finished QIF or CSV register export to the system document
+/// picker -- the actual UTType written is whatever `.fileExporter` is
+/// given at the call site, matching `XMLExportDocument`'s precedent.
+private struct RegisterExportDocument: FileDocument {
+    static var readableContentTypes: [UTType] {
+        [UTType(filenameExtension: "qif") ?? .plainText, UTType(filenameExtension: "csv") ?? .commaSeparatedText]
+    }
+
+    let data: Data
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        data = configuration.file.regularFileContents ?? Data()
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
     }
 }
 
