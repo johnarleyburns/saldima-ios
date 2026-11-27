@@ -19,9 +19,6 @@ struct RootTabView: View {
             Tab("Accounts", systemImage: "building.columns") {
                 AccountsView(session: session)
             }
-            Tab("Register", systemImage: "list.bullet.rectangle") {
-                RegisterView(session: session)
-            }
             Tab("Invoices", systemImage: "doc.text") {
                 InvoicesView(session: session)
             }
@@ -30,9 +27,6 @@ struct RootTabView: View {
             }
             Tab("Receipts", systemImage: "doc.viewfinder") {
                 ReceiptsView(session: session)
-            }
-            Tab("Reports", systemImage: "chart.bar") {
-                ReportsView(session: session)
             }
         }
         .tint(accent.color)
