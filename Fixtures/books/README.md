@@ -24,3 +24,18 @@ side (`trn:commodity` instead of `trn:currency`). It does **not** replace the
 owner's real anonymised book above; it's useful for exercising the read path
 against independently-verified, known-correct numbers. SHA-256:
 `791a5ddd8fa3e9ee293090dbe68ce8f2d5270b6ed2be3daea620265c99d6e0e9`.
+
+`gronewald-gl-2023-01.gnucash`, `gronewald-gl-2023-07.gnucash`, and
+`gronewald-gl-2024-12.gnucash` are a real, independently-published academic
+synthetic general-ledger dataset -- **"DIB General Ledger Data"**, Jan
+Gronewald, Sebastian Stephan, Alexander Rombach, and Peter Fettke (Saarland
+University / DFKI), Zenodo record
+[22014653](https://doi.org/10.5281/zenodo.22014653) (v2, 2026-08-19), **CC BY
+4.0**. A genuinely complex German SME chart of accounts (VAT, trade
+receivables/payables, payroll) and balanced multi-leg journal entries; each
+file is one standalone calendar month (not a cumulative series) from the
+dataset's full 2023-01..2024-12 range, picked non-adjacent for temporal
+spread. Built by the web repo's `scripts/import-gronewald-fixture.ts`; see
+its `fixtures/books/README.md` for full provenance, per-file account/
+transaction counts, and hashes. Every file was opened and re-saved by the
+real GnuCash engine as an external oracle, with zero errors.
