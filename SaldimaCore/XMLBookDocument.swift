@@ -121,12 +121,59 @@ final class XMLBookDocument {
         var isPosted: Bool { datePosted != nil }
     }
 
+    /// A `gnc:GncVendor` business object: who a bill is owed to.
+    struct VendorRow: Sendable, Hashable, Identifiable {
+        let guid: Guid
+        let name: String
+        let vendorNumber: String
+        let addressLine1: String
+        let phone: String
+        let email: String
+        let notes: String
+        let active: Bool
+        var id: Guid { guid }
+    }
+
+    /// A `gnc:GncEntry` line item on a bill, using its bill-side fields
+    /// (`entry:bill`/`entry:b-acct`/`entry:b-price`) -- distinct from an
+    /// invoice line's `entry:invoice`/`entry:i-acct`/`entry:i-price`, even
+    /// though both share the same element.
+    struct BillEntryRow: Sendable, Hashable, Identifiable {
+        let guid: Guid
+        let billGuid: Guid
+        let date: String
+        let description: String
+        let quantity: Money
+        let unitPrice: Money
+        let expenseAccountGuid: Guid
+        var id: Guid { guid }
+        var amount: Money { (try? Money.multiply(quantity, unitPrice)) ?? .zero }
+    }
+
+    /// A vendor bill: GnuCash stores it as a `gnc:GncInvoice` exactly like
+    /// a customer invoice, distinguished only by `invoice:owner`'s
+    /// `owner:type` (`"gncVendor"` here, `"gncCustomer"` for an invoice).
+    struct BillRow: Sendable, Hashable, Identifiable {
+        let guid: Guid
+        let billNumber: String
+        let vendorGuid: Guid
+        let dateOpened: String
+        let datePosted: String?
+        let notes: String
+        let active: Bool
+        let postedTransactionGuid: Guid?
+        let payableAccountGuid: Guid?
+        var id: Guid { guid }
+        var isPosted: Bool { datePosted != nil }
+    }
+
     private let root: XNode
     private let book: XNode
     private var accountIndex: [Guid: XNode] = [:]
     private var transactionIndex: [Guid: XNode] = [:]
     private var customerIndex: [Guid: XNode] = [:]
     private var invoiceIndex: [Guid: XNode] = [:]
+    private var vendorIndex: [Guid: XNode] = [:]
 
     private init(root: XNode, book: XNode) {
         self.root = root
@@ -247,6 +294,7 @@ final class XMLBookDocument {
         transactionIndex.removeAll()
         customerIndex.removeAll()
         invoiceIndex.removeAll()
+        vendorIndex.removeAll()
         for node in children(book, localName: "account") {
             if let guid = guidValue(node, localName: "id") {
                 accountIndex[guid] = node
@@ -262,11 +310,23 @@ final class XMLBookDocument {
                 customerIndex[guid] = node
             }
         }
+        // Customer invoices and vendor bills are both `gnc:GncInvoice`,
+        // distinguished only by `invoice:owner`'s `owner:type` -- this
+        // index holds both; `invoices()`/`bills()` filter by owner type.
         for node in children(book, localName: "GncInvoice") {
             if let guid = guidValue(node, localName: "guid") {
                 invoiceIndex[guid] = node
             }
         }
+        for node in children(book, localName: "GncVendor") {
+            if let guid = guidValue(node, localName: "guid") {
+                vendorIndex[guid] = node
+            }
+        }
+    }
+
+    private func ownerType(_ node: XNode) -> String? {
+        firstChild(node, localName: "owner").flatMap { firstChild($0, localName: "type") }.map(decodedText)
     }
 
     var bookGuid: Guid? {
@@ -689,11 +749,14 @@ final class XMLBookDocument {
     // MARK: - Reading: invoices and entries
 
     func invoices() -> [InvoiceRow] {
-        children(book, localName: "GncInvoice").compactMap(invoiceRow)
+        children(book, localName: "GncInvoice")
+            .filter { ownerType($0) != "gncVendor" }
+            .compactMap(invoiceRow)
     }
 
     func invoice(_ guid: Guid) -> InvoiceRow? {
-        invoiceIndex[guid].flatMap(invoiceRow)
+        guard let node = invoiceIndex[guid], ownerType(node) != "gncVendor" else { return nil }
+        return invoiceRow(node)
     }
 
     private func invoiceRow(_ node: XNode) -> InvoiceRow? {
@@ -836,6 +899,257 @@ final class XMLBookDocument {
         node.addChild(postedNode)
         node.addChild(leaf("invoice:posttxn", transactionGuid.rawValue, attributes: ["type": "guid"]))
         node.addChild(leaf("invoice:postacc", receivableAccountGuid.rawValue, attributes: ["type": "guid"]))
+    }
+
+    // MARK: - Reading: vendors
+
+    func vendors() -> [VendorRow] {
+        children(book, localName: "GncVendor").compactMap(vendorRow)
+    }
+
+    func vendor(_ guid: Guid) -> VendorRow? {
+        vendorIndex[guid].flatMap(vendorRow)
+    }
+
+    private func vendorRow(_ node: XNode) -> VendorRow? {
+        guard let guid = guidValue(node, localName: "guid"),
+              let name = firstChild(node, localName: "name").map(decodedText)
+        else {
+            return nil
+        }
+        let address = firstChild(node, localName: "addr")
+        func addressField(_ name: String) -> String {
+            address.flatMap { firstChild($0, localName: name) }.map(decodedText) ?? ""
+        }
+        return VendorRow(
+            guid: guid,
+            name: name,
+            vendorNumber: firstChild(node, localName: "id").map(decodedText) ?? "",
+            addressLine1: addressField("addr1"),
+            phone: addressField("phone"),
+            email: addressField("email"),
+            notes: firstChild(node, localName: "notes").map(decodedText) ?? "",
+            active: firstChild(node, localName: "active").map(decodedText) != "0"
+        )
+    }
+
+    // MARK: - Mutating: vendors
+
+    @discardableResult
+    func createVendor(
+        guid: Guid,
+        name: String,
+        vendorNumber: String,
+        addressLine1: String,
+        phone: String,
+        email: String,
+        notes: String,
+        currencyCode: String
+    ) -> VendorRow {
+        let node = Self.vendorNode(
+            guid: guid,
+            name: name,
+            vendorNumber: vendorNumber,
+            addressLine1: addressLine1,
+            phone: phone,
+            email: email,
+            notes: notes,
+            active: true,
+            currencyCode: currencyCode
+        )
+        book.addChild(node)
+        vendorIndex[guid] = node
+        return vendorRow(node)!
+    }
+
+    func updateVendor(
+        _ guid: Guid,
+        name: String,
+        vendorNumber: String,
+        addressLine1: String,
+        phone: String,
+        email: String,
+        notes: String,
+        active: Bool
+    ) {
+        guard let node = vendorIndex[guid] else { return }
+        setChildText(node, localName: "name", tag: "vendor:name", value: name)
+        setChildText(node, localName: "id", tag: "vendor:id", value: vendorNumber)
+        let address = firstChild(node, localName: "addr") ?? {
+            let created = XNode(name: "vendor:addr", attributes: ["version": "2.0.0"])
+            node.addChild(created)
+            return created
+        }()
+        setChildText(address, localName: "addr1", tag: "addr:addr1", value: addressLine1)
+        setChildText(address, localName: "phone", tag: "addr:phone", value: phone)
+        setChildText(address, localName: "email", tag: "addr:email", value: email)
+        setChildText(node, localName: "notes", tag: "vendor:notes", value: notes)
+        setChildText(node, localName: "active", tag: "vendor:active", value: active ? "1" : "0")
+    }
+
+    func deleteVendor(_ guid: Guid) {
+        guard let node = vendorIndex[guid] else { return }
+        node.detach()
+        vendorIndex.removeValue(forKey: guid)
+    }
+
+    func vendorInUse(_ guid: Guid) -> Bool {
+        bills().contains { $0.vendorGuid == guid }
+    }
+
+    // MARK: - Reading: bills and bill entries
+
+    func bills() -> [BillRow] {
+        children(book, localName: "GncInvoice")
+            .filter { ownerType($0) == "gncVendor" }
+            .compactMap(billRow)
+    }
+
+    func bill(_ guid: Guid) -> BillRow? {
+        guard let node = invoiceIndex[guid], ownerType(node) == "gncVendor" else { return nil }
+        return billRow(node)
+    }
+
+    private func billRow(_ node: XNode) -> BillRow? {
+        guard let guid = guidValue(node, localName: "guid"),
+              let owner = firstChild(node, localName: "owner"),
+              let vendorGuid = guidValue(owner, localName: "id")
+        else {
+            return nil
+        }
+        let dateOpened = firstChild(node, localName: "opened")
+            .flatMap { firstChild($0, localName: "date") }
+            .map(decodedText) ?? ""
+        let datePosted = firstChild(node, localName: "posted")
+            .flatMap { firstChild($0, localName: "date") }
+            .map(decodedText)
+        return BillRow(
+            guid: guid,
+            billNumber: firstChild(node, localName: "id").map(decodedText) ?? "",
+            vendorGuid: vendorGuid,
+            dateOpened: dateOpened,
+            datePosted: datePosted,
+            notes: firstChild(node, localName: "notes").map(decodedText) ?? "",
+            active: firstChild(node, localName: "active").map(decodedText) != "0",
+            postedTransactionGuid: guidValue(node, localName: "posttxn"),
+            payableAccountGuid: guidValue(node, localName: "postacc")
+        )
+    }
+
+    /// Every line on one bill, oldest first.
+    func billEntries(forBill billGuid: Guid) -> [BillEntryRow] {
+        children(book, localName: "GncEntry")
+            .compactMap(billEntryRow)
+            .filter { $0.billGuid == billGuid }
+            .sorted { $0.date == $1.date ? $0.guid.rawValue < $1.guid.rawValue : $0.date < $1.date }
+    }
+
+    private func billEntryRow(_ node: XNode) -> BillEntryRow? {
+        guard let guid = guidValue(node, localName: "guid"),
+              let billGuid = guidValue(node, localName: "bill"),
+              let expenseAccountGuid = guidValue(node, localName: "b-acct")
+        else {
+            return nil
+        }
+        let date = firstChild(node, localName: "date")
+            .flatMap { firstChild($0, localName: "date") }
+            .map(decodedText) ?? ""
+        let quantity = firstChild(node, localName: "qty").map(decodedText).flatMap(rational) ?? .zero
+        let unitPrice = firstChild(node, localName: "b-price").map(decodedText).flatMap(rational) ?? .zero
+        return BillEntryRow(
+            guid: guid,
+            billGuid: billGuid,
+            date: date,
+            description: firstChild(node, localName: "description").map(decodedText) ?? "",
+            quantity: quantity,
+            unitPrice: unitPrice,
+            expenseAccountGuid: expenseAccountGuid
+        )
+    }
+
+    // MARK: - Mutating: bills and bill entries
+
+    @discardableResult
+    func createBill(
+        guid: Guid,
+        billNumber: String,
+        vendorGuid: Guid,
+        dateOpened: String,
+        notes: String,
+        currencyCode: String
+    ) -> BillRow {
+        let node = Self.billNode(
+            guid: guid,
+            billNumber: billNumber,
+            vendorGuid: vendorGuid,
+            dateOpened: dateOpened,
+            notes: notes,
+            currencyCode: currencyCode
+        )
+        book.addChild(node)
+        invoiceIndex[guid] = node
+        return billRow(node)!
+    }
+
+    /// Drafts only: a posted bill is part of the permanent ledger history.
+    func deleteBill(_ guid: Guid) {
+        guard let node = invoiceIndex[guid] else { return }
+        for entryNode in children(book, localName: "GncEntry")
+        where guidValue(entryNode, localName: "bill") == guid {
+            entryNode.detach()
+        }
+        node.detach()
+        invoiceIndex.removeValue(forKey: guid)
+    }
+
+    @discardableResult
+    func addBillEntry(
+        guid: Guid,
+        billGuid: Guid,
+        date: String,
+        description: String,
+        quantity: Money,
+        unitPrice: Money,
+        expenseAccountGuid: Guid
+    ) -> BillEntryRow {
+        let node = Self.billEntryNode(
+            guid: guid,
+            billGuid: billGuid,
+            date: date,
+            description: description,
+            quantity: quantity,
+            unitPrice: unitPrice,
+            expenseAccountGuid: expenseAccountGuid
+        )
+        book.addChild(node)
+        return billEntryRow(node)!
+    }
+
+    func deleteBillEntry(_ guid: Guid) {
+        guard let node = children(book, localName: "GncEntry")
+            .first(where: { guidValue($0, localName: "guid") == guid })
+        else {
+            return
+        }
+        node.detach()
+    }
+
+    /// Marks a draft bill posted: stamps the posted date, the real ledger
+    /// transaction behind it, and the payable account used -- matching
+    /// desktop GnuCash's own "Post Bill" action. The caller creates that
+    /// transaction separately via `postTransaction`.
+    func markBillPosted(
+        _ guid: Guid,
+        postedDate: String,
+        transactionGuid: Guid,
+        payableAccountGuid: Guid
+    ) {
+        guard let node = invoiceIndex[guid] else { return }
+        let postedNode = XNode(name: "invoice:posted")
+        postedNode.addChild(leaf("ts:date", postedDate))
+        node.addChild(postedNode)
+        node.addChild(leaf("invoice:posttxn", transactionGuid.rawValue, attributes: ["type": "guid"]))
+        node.addChild(leaf("invoice:postacc", payableAccountGuid.rawValue, attributes: ["type": "guid"]))
     }
 
     // MARK: - Building new nodes
@@ -1042,6 +1356,102 @@ final class XMLBookDocument {
         node.addChild(leaf("entry:i-disc-how", "PRETAX"))
         node.addChild(leaf("entry:i-taxable", "0"))
         node.addChild(leaf("entry:i-taxincluded", "0"))
+        return node
+    }
+
+    private static func vendorNode(
+        guid: Guid,
+        name: String,
+        vendorNumber: String,
+        addressLine1: String,
+        phone: String,
+        email: String,
+        notes: String,
+        active: Bool,
+        currencyCode: String
+    ) -> XNode {
+        let node = XNode(name: "gnc:GncVendor", attributes: ["version": "2.0.0"])
+        node.addChild(leaf("vendor:guid", guid.rawValue, attributes: ["type": "guid"]))
+        node.addChild(leaf("vendor:name", name))
+        node.addChild(leaf("vendor:id", vendorNumber))
+
+        let address = XNode(name: "vendor:addr", attributes: ["version": "2.0.0"])
+        address.addChild(leaf("addr:name", ""))
+        address.addChild(leaf("addr:addr1", addressLine1))
+        address.addChild(leaf("addr:addr2", ""))
+        address.addChild(leaf("addr:phone", phone))
+        address.addChild(leaf("addr:email", email))
+        node.addChild(address)
+
+        node.addChild(leaf("vendor:notes", notes))
+        node.addChild(leaf("vendor:taxincluded", "0"))
+        node.addChild(leaf("vendor:active", active ? "1" : "0"))
+
+        let currency = XNode(name: "vendor:currency")
+        currency.addChild(leaf("cmdty:space", "CURRENCY"))
+        currency.addChild(leaf("cmdty:id", currencyCode))
+        node.addChild(currency)
+        return node
+    }
+
+    private static func billNode(
+        guid: Guid,
+        billNumber: String,
+        vendorGuid: Guid,
+        dateOpened: String,
+        notes: String,
+        currencyCode: String
+    ) -> XNode {
+        let node = XNode(name: "gnc:GncInvoice", attributes: ["version": "2.0.0"])
+        node.addChild(leaf("invoice:guid", guid.rawValue, attributes: ["type": "guid"]))
+        node.addChild(leaf("invoice:id", billNumber))
+
+        let owner = XNode(name: "invoice:owner", attributes: ["version": "2.0.0"])
+        owner.addChild(leaf("owner:type", "gncVendor"))
+        owner.addChild(leaf("owner:id", vendorGuid.rawValue, attributes: ["type": "guid"]))
+        node.addChild(owner)
+
+        let opened = XNode(name: "invoice:opened")
+        opened.addChild(leaf("ts:date", dateOpened))
+        node.addChild(opened)
+
+        node.addChild(leaf("invoice:notes", notes))
+        node.addChild(leaf("invoice:active", "1"))
+
+        let currency = XNode(name: "invoice:currency")
+        currency.addChild(leaf("cmdty:space", "CURRENCY"))
+        currency.addChild(leaf("cmdty:id", currencyCode))
+        node.addChild(currency)
+        return node
+    }
+
+    private static func billEntryNode(
+        guid: Guid,
+        billGuid: Guid,
+        date: String,
+        description: String,
+        quantity: Money,
+        unitPrice: Money,
+        expenseAccountGuid: Guid
+    ) -> XNode {
+        let node = XNode(name: "gnc:GncEntry", attributes: ["version": "2.0.0"])
+        node.addChild(leaf("entry:guid", guid.rawValue, attributes: ["type": "guid"]))
+
+        let dateNode = XNode(name: "entry:date")
+        dateNode.addChild(leaf("ts:date", date))
+        node.addChild(dateNode)
+        let enteredNode = XNode(name: "entry:entered")
+        enteredNode.addChild(leaf("ts:date", date))
+        node.addChild(enteredNode)
+
+        node.addChild(leaf("entry:description", description))
+        node.addChild(leaf("entry:qty", "\(quantity.num)/\(quantity.denom)"))
+        node.addChild(leaf("entry:b-acct", expenseAccountGuid.rawValue, attributes: ["type": "guid"]))
+        node.addChild(leaf("entry:b-price", "\(unitPrice.num)/\(unitPrice.denom)"))
+        node.addChild(leaf("entry:bill", billGuid.rawValue, attributes: ["type": "guid"]))
+        node.addChild(leaf("entry:billable", "0"))
+        node.addChild(leaf("entry:b-taxable", "0"))
+        node.addChild(leaf("entry:b-taxincluded", "0"))
         return node
     }
 
