@@ -305,6 +305,91 @@ public enum ScheduledTransactionError: Error, Equatable, Sendable {
     case unknownScheduledTransaction(Guid)
 }
 
+/// Desktop GnuCash's "Budgets": a recurrence plus a count of periods.
+/// `recurrence` is immutable once created -- same convention as scheduled
+/// transactions (delete and recreate instead) -- mirroring the web
+/// engine's locked design (`johnarleyburns/saldima#102`). Per-account-
+/// per-period amounts and the live "actual" are read separately
+/// (`budgetAmount`/`budgetActual`/`budgetGrid`), never stored on this type.
+public struct Budget: Sendable, Hashable, Identifiable {
+    public let guid: Guid
+    public let name: String
+    public let description: String
+    public let periodCount: Int
+    public let recurrence: Recurrence
+
+    public var id: Guid { guid }
+}
+
+/// The fields a new budget is created with.
+public struct BudgetDraft: Sendable, Hashable {
+    public var name: String
+    public var description: String
+    public var periodCount: Int
+    public var recurrence: Recurrence
+
+    public init(
+        name: String,
+        description: String = "",
+        periodCount: Int,
+        recurrence: Recurrence
+    ) {
+        self.name = name
+        self.description = description
+        self.periodCount = periodCount
+        self.recurrence = recurrence
+    }
+}
+
+/// The only fields an existing budget can patch -- the recurrence can't be
+/// changed here; delete this budget and create a new one instead, matching
+/// the web engine's own `UpdateBudgetInput` exactly.
+public struct BudgetEditDraft: Sendable, Hashable {
+    public var name: String
+    public var description: String
+    public var periodCount: Int
+
+    public init(name: String, description: String, periodCount: Int) {
+        self.name = name
+        self.description = description
+        self.periodCount = periodCount
+    }
+}
+
+/// One period's `[start, end)` range, from `BookStore.budgetPeriodRange`.
+public struct BudgetPeriodRange: Sendable, Hashable {
+    public let start: String
+    public let end: String
+}
+
+/// One account's budgeted-vs-actual row in a budget grid, every period at once.
+public struct BudgetGridRow: Sendable, Hashable, Identifiable {
+    public let accountGuid: Guid
+    public let accountName: String
+    /// Indexed by period; `nil` means that period was never set for this account.
+    public let budgeted: [Money?]
+    /// Indexed by period; computed live, never stored.
+    public let actual: [Money]
+
+    public var id: Guid { accountGuid }
+}
+
+/// A whole budget grid (accounts down, periods across), built in one
+/// `BookStore.budgetGrid` call so a grid screen needs a single actor hop
+/// rather than one round trip per cell.
+public struct BudgetGrid: Sendable, Hashable {
+    public let periods: [BudgetPeriodRange]
+    public let rows: [BudgetGridRow]
+}
+
+public enum BudgetError: Error, Equatable, Sendable {
+    case invalidName
+    case invalidPeriodCount
+    case invalidPeriodIndex
+    case recurrenceExhausted
+    case unknownBudget(Guid)
+}
+
 /// A GnuCash `GncCustomer` business object: a billing contact for invoices.
 public struct Customer: Hashable, Sendable, Identifiable {
     public let guid: Guid
@@ -1235,6 +1320,158 @@ public actor BookStore {
         }
         if posted { try save() }
         return due.filter { $0.action != .autoPost }
+    }
+
+    // MARK: - Budgets
+
+    public func budgets() throws -> [Budget] {
+        guard let document else { throw BookStoreError.cannotOpen }
+        return document.budgets().map(Self.toBudget)
+    }
+
+    public func budget(_ guid: Guid) throws -> Budget? {
+        guard let document else { throw BookStoreError.cannotOpen }
+        return document.budget(guid).map(Self.toBudget)
+    }
+
+    private static func toBudget(_ row: BudgetRow) -> Budget {
+        Budget(
+            guid: row.guid,
+            name: row.name,
+            description: row.description,
+            periodCount: row.periodCount,
+            recurrence: row.recurrence
+        )
+    }
+
+    /// Creates a budget: a plain recurrence plus a period count, mirroring
+    /// the web's exact XML shape (`johnarleyburns/saldima#102`). The
+    /// recurrence is immutable after creation, the same convention
+    /// scheduled transactions use.
+    @discardableResult
+    public func createBudget(_ draft: BudgetDraft, ids: any IDGenerator) throws -> Guid {
+        guard let document else { throw BookStoreError.cannotOpen }
+        let name = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { throw BudgetError.invalidName }
+        guard draft.periodCount >= 1 else { throw BudgetError.invalidPeriodCount }
+        let guid = ids.guid()
+        document.createBudget(
+            guid: guid,
+            name: name,
+            description: draft.description,
+            periodCount: draft.periodCount,
+            recurrence: draft.recurrence
+        )
+        try save()
+        return guid
+    }
+
+    /// Patches name, description and periodCount only -- the recurrence
+    /// can't be changed here; delete this budget and create a new one
+    /// instead, matching the web engine's own `UpdateBudgetInput`.
+    public func updateBudget(_ guid: Guid, with draft: BudgetEditDraft) throws {
+        guard let document else { throw BookStoreError.cannotOpen }
+        guard document.budget(guid) != nil else { throw BudgetError.unknownBudget(guid) }
+        let name = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { throw BudgetError.invalidName }
+        guard draft.periodCount >= 1 else { throw BudgetError.invalidPeriodCount }
+        document.updateBudget(guid, name: name, description: draft.description, periodCount: draft.periodCount)
+        try save()
+    }
+
+    public func deleteBudget(_ guid: Guid) throws {
+        guard let document else { throw BookStoreError.cannotOpen }
+        guard document.budget(guid) != nil else { throw BudgetError.unknownBudget(guid) }
+        document.deleteBudget(guid)
+        try save()
+    }
+
+    /// Period *N*'s `[start, end)` range: `instance(N)` to `instance(N+1)`
+    /// of the budget's own recurrence.
+    public func budgetPeriodRange(_ guid: Guid, periodIndex: Int) throws -> BudgetPeriodRange {
+        guard let document else { throw BookStoreError.cannotOpen }
+        guard let row = document.budget(guid) else { throw BudgetError.unknownBudget(guid) }
+        do {
+            let range = try document.periodRange(row, periodIndex: periodIndex)
+            return BudgetPeriodRange(start: range.start, end: range.end)
+        } catch BudgetRangeError.invalidPeriodIndex {
+            throw BudgetError.invalidPeriodIndex
+        } catch BudgetRangeError.recurrenceExhausted {
+            throw BudgetError.recurrenceExhausted
+        }
+    }
+
+    /// `nil` if this account's period has never had an amount set -- never a zero placeholder.
+    public func budgetAmount(_ budgetGuid: Guid, accountGuid: Guid, periodIndex: Int) throws -> Money? {
+        guard let document else { throw BookStoreError.cannotOpen }
+        guard document.budget(budgetGuid) != nil else { throw BudgetError.unknownBudget(budgetGuid) }
+        return document.budgetAmount(budgetGuid, accountGuid: accountGuid, periodIndex: periodIndex)
+    }
+
+    /// Sum of this account's split values whose transaction date falls in
+    /// the period's `[start, end)` range -- computed live every time,
+    /// never stored, exactly matching desktop GnuCash.
+    public func budgetActual(_ budgetGuid: Guid, accountGuid: Guid, periodIndex: Int) throws -> Money {
+        guard let document else { throw BookStoreError.cannotOpen }
+        do {
+            return try document.budgetActual(budgetGuid, accountGuid: accountGuid, periodIndex: periodIndex)
+        } catch {
+            throw BudgetError.unknownBudget(budgetGuid)
+        }
+    }
+
+    /// One account/period edit in a whole-grid save.
+    public struct BudgetAmountEdit: Sendable, Hashable {
+        public let accountGuid: Guid
+        public let periodIndex: Int
+        /// `nil` clears the amount -- never written as a zero placeholder.
+        public let amount: Money?
+
+        public init(accountGuid: Guid, periodIndex: Int, amount: Money?) {
+            self.accountGuid = accountGuid
+            self.periodIndex = periodIndex
+            self.amount = amount
+        }
+    }
+
+    /// Applies every edit in one document mutation pass and one atomic
+    /// save -- matching the web engine's own `updateBudgetAmountsRoute`,
+    /// which the web PR explicitly chose over saving each cell separately.
+    public func saveBudgetAmounts(_ budgetGuid: Guid, edits: [BudgetAmountEdit]) throws {
+        guard let document else { throw BookStoreError.cannotOpen }
+        guard document.budget(budgetGuid) != nil else { throw BudgetError.unknownBudget(budgetGuid) }
+        for edit in edits {
+            document.setBudgetAmount(budgetGuid, accountGuid: edit.accountGuid, periodIndex: edit.periodIndex, amount: edit.amount)
+        }
+        try save()
+    }
+
+    /// Builds a whole grid (every period's range, and every given
+    /// account's budgeted amount and live actual for every period) in one
+    /// actor call, so a grid screen needs a single round trip rather than
+    /// one per cell.
+    public func budgetGrid(_ budgetGuid: Guid, accountGuids: [Guid]) throws -> BudgetGrid {
+        guard let document else { throw BookStoreError.cannotOpen }
+        guard let row = document.budget(budgetGuid) else { throw BudgetError.unknownBudget(budgetGuid) }
+
+        var periods: [BudgetPeriodRange] = []
+        for index in 0..<row.periodCount {
+            let range = try document.periodRange(row, periodIndex: index)
+            periods.append(BudgetPeriodRange(start: range.start, end: range.end))
+        }
+
+        var rows: [BudgetGridRow] = []
+        for accountGuid in accountGuids {
+            guard let account = document.account(accountGuid) else { continue }
+            var budgeted: [Money?] = []
+            var actual: [Money] = []
+            for index in 0..<row.periodCount {
+                budgeted.append(document.budgetAmount(budgetGuid, accountGuid: accountGuid, periodIndex: index))
+                actual.append(try document.budgetActual(budgetGuid, accountGuid: accountGuid, periodIndex: index))
+            }
+            rows.append(BudgetGridRow(accountGuid: accountGuid, accountName: account.name, budgeted: budgeted, actual: actual))
+        }
+        return BudgetGrid(periods: periods, rows: rows)
     }
 
     // MARK: - Customers
