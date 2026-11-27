@@ -379,17 +379,19 @@ final class BookSession {
     /// Accounts a budget grid shows: visible, non-placeholder, non-hidden
     /// -- the same filter the web engine's own `budgetableAccountRows` uses.
     func budgetableAccountOptions() -> [(guid: Guid, name: String)] {
-        func walk(_ nodes: [Account], into rows: inout [(Guid, String)]) {
+        func walk(_ nodes: [Account], into rows: inout [(guid: Guid, name: String)]) {
             for node in nodes {
                 if node.accountType != "ROOT" && !node.placeholder && !node.hidden {
-                    rows.append((node.guid, node.name))
+                    rows.append((guid: node.guid, name: node.name))
                 }
                 walk(node.children, into: &rows)
             }
         }
-        var rows: [(Guid, String)] = []
+        var rows: [(guid: Guid, name: String)] = []
         walk(accounts, into: &rows)
-        return rows.sorted { $0.name < $1.name }
+        return rows.sorted { (left: (guid: Guid, name: String), right: (guid: Guid, name: String)) in
+            left.name < right.name
+        }
     }
 
     @discardableResult
