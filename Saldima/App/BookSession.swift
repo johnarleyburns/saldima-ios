@@ -142,6 +142,36 @@ final class BookSession {
         }
     }
 
+    /// One account's register as a QIF file, the same format
+    /// `packages/importers` reads and writes on the web track.
+    func exportQif(accountGuid: Guid) -> (data: Data, filename: String)? {
+        exportRegister(accountGuid: accountGuid, extension: "qif", serialize: serializeQif)
+    }
+
+    /// One account's register as a CSV file, the same format
+    /// `packages/importers` reads and writes on the web track.
+    func exportCsv(accountGuid: Guid) -> (data: Data, filename: String)? {
+        exportRegister(accountGuid: accountGuid, extension: "csv", serialize: serializeCsv)
+    }
+
+    private func exportRegister(
+        accountGuid: Guid,
+        extension fileExtension: String,
+        serialize: ([RegisterExportRow]) throws -> String
+    ) -> (data: Data, filename: String)? {
+        guard let account = accounts.first(where: { $0.guid == accountGuid }) else { return nil }
+        let names = Dictionary(uniqueKeysWithValues: accounts.map { ($0.guid, $0.name) })
+        let rows = registerExportRows(transactions: transactions, accountNames: names, accountGuid: accountGuid)
+        do {
+            let text = try serialize(rows)
+            let filename = registerExportFilename(accountName: account.name, extension: fileExtension)
+            return (Data(text.utf8), filename)
+        } catch {
+            lastError = Self.message(for: error)
+            return nil
+        }
+    }
+
     @discardableResult
     func save(_ draft: AccountDraft, editing account: Account?) async -> Bool {
         guard let store else { return false }
