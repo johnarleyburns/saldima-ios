@@ -300,6 +300,152 @@ public enum InvoiceEditError: Error, Equatable, Sendable {
     case unknownAccount(Guid)
 }
 
+/// A GnuCash `GncVendor` business object: who a bill is owed to.
+public struct Vendor: Hashable, Sendable, Identifiable {
+    public let guid: Guid
+    public let name: String
+    public let vendorNumber: String
+    public let addressLine1: String
+    public let phone: String
+    public let email: String
+    public let notes: String
+    public let active: Bool
+
+    public var id: Guid { guid }
+
+    public init(
+        guid: Guid,
+        name: String,
+        vendorNumber: String,
+        addressLine1: String,
+        phone: String,
+        email: String,
+        notes: String,
+        active: Bool
+    ) {
+        self.guid = guid
+        self.name = name
+        self.vendorNumber = vendorNumber
+        self.addressLine1 = addressLine1
+        self.phone = phone
+        self.email = email
+        self.notes = notes
+        self.active = active
+    }
+}
+
+public struct VendorDraft: Sendable, Hashable {
+    public var name: String
+    public var vendorNumber: String
+    public var addressLine1: String
+    public var phone: String
+    public var email: String
+    public var notes: String
+    public var active: Bool
+
+    public init(
+        name: String,
+        vendorNumber: String = "",
+        addressLine1: String = "",
+        phone: String = "",
+        email: String = "",
+        notes: String = "",
+        active: Bool = true
+    ) {
+        self.name = name
+        self.vendorNumber = vendorNumber
+        self.addressLine1 = addressLine1
+        self.phone = phone
+        self.email = email
+        self.notes = notes
+        self.active = active
+    }
+}
+
+/// One line on a bill: also a `GncEntry`, but using its bill-side fields.
+public struct BillLine: Hashable, Sendable, Identifiable {
+    public let guid: Guid
+    public let date: String
+    public let description: String
+    public let quantity: Money
+    public let unitPrice: Money
+    public let expenseAccountGuid: Guid
+
+    public var id: Guid { guid }
+    public var amount: Money { (try? Money.multiply(quantity, unitPrice)) ?? .zero }
+
+    public init(
+        guid: Guid,
+        date: String,
+        description: String,
+        quantity: Money,
+        unitPrice: Money,
+        expenseAccountGuid: Guid
+    ) {
+        self.guid = guid
+        self.date = date
+        self.description = description
+        self.quantity = quantity
+        self.unitPrice = unitPrice
+        self.expenseAccountGuid = expenseAccountGuid
+    }
+}
+
+/// A vendor bill: GnuCash stores it as a `gnc:GncInvoice` exactly like a
+/// customer invoice, distinguished only by `invoice:owner`'s `owner:type`.
+/// `datePosted == nil` means it is still a draft; posting is the one-way
+/// action that creates the real payable/expense transaction behind it.
+public struct Bill: Hashable, Sendable, Identifiable {
+    public let guid: Guid
+    public let billNumber: String
+    public let vendorGuid: Guid
+    public let dateOpened: String
+    public let datePosted: String?
+    public let notes: String
+    public let active: Bool
+    public let lines: [BillLine]
+
+    public var id: Guid { guid }
+    public var isPosted: Bool { datePosted != nil }
+    public var total: Money {
+        lines.reduce(Money.zero) { sum, line in (try? Money.add(sum, line.amount)) ?? sum }
+    }
+
+    public init(
+        guid: Guid,
+        billNumber: String,
+        vendorGuid: Guid,
+        dateOpened: String,
+        datePosted: String?,
+        notes: String,
+        active: Bool,
+        lines: [BillLine]
+    ) {
+        self.guid = guid
+        self.billNumber = billNumber
+        self.vendorGuid = vendorGuid
+        self.dateOpened = dateOpened
+        self.datePosted = datePosted
+        self.notes = notes
+        self.active = active
+        self.lines = lines
+    }
+}
+
+public enum VendorEditError: Error, Equatable, Sendable {
+    case invalidName
+    case unknownVendor(Guid)
+    case vendorInUse
+}
+
+public enum BillEditError: Error, Equatable, Sendable {
+    case unknownVendor(Guid)
+    case unknownBill(Guid)
+    case alreadyPosted(Guid)
+    case noLines
+    case unknownAccount(Guid)
+}
+
 public enum BookStoreError: Error, Equatable, Sendable {
     case cannotOpen
     case notSQLite
@@ -905,6 +1051,245 @@ public actor BookStore {
             postedDate: postedDate,
             transactionGuid: txGuid,
             receivableAccountGuid: receivableAccountGuid
+        )
+        try save()
+        return txGuid
+    }
+
+    // MARK: - Vendors
+
+    public func vendors() throws -> [Vendor] {
+        guard let document else { throw BookStoreError.cannotOpen }
+        return document.vendors().map(Self.toVendor).sorted { $0.name < $1.name }
+    }
+
+    public func vendor(_ guid: Guid) throws -> Vendor? {
+        guard let document else { throw BookStoreError.cannotOpen }
+        return document.vendor(guid).map(Self.toVendor)
+    }
+
+    @discardableResult
+    public func createVendor(_ draft: VendorDraft, ids: any IDGenerator) throws -> Guid {
+        guard let document else { throw BookStoreError.cannotOpen }
+        let name = try validateVendor(draft)
+        let currency = try bookCurrency() ?? .usd
+        let guid = ids.guid()
+        document.createVendor(
+            guid: guid,
+            name: name,
+            vendorNumber: draft.vendorNumber,
+            addressLine1: draft.addressLine1,
+            phone: draft.phone,
+            email: draft.email,
+            notes: draft.notes,
+            currencyCode: currency.code
+        )
+        try save()
+        return guid
+    }
+
+    public func updateVendor(_ guid: Guid, with draft: VendorDraft) throws {
+        guard let document else { throw BookStoreError.cannotOpen }
+        guard document.vendor(guid) != nil else { throw VendorEditError.unknownVendor(guid) }
+        let name = try validateVendor(draft)
+        document.updateVendor(
+            guid,
+            name: name,
+            vendorNumber: draft.vendorNumber,
+            addressLine1: draft.addressLine1,
+            phone: draft.phone,
+            email: draft.email,
+            notes: draft.notes,
+            active: draft.active
+        )
+        try save()
+    }
+
+    public func deleteVendor(_ guid: Guid) throws {
+        guard let document else { throw BookStoreError.cannotOpen }
+        guard document.vendor(guid) != nil else { throw VendorEditError.unknownVendor(guid) }
+        guard !document.vendorInUse(guid) else { throw VendorEditError.vendorInUse }
+        document.deleteVendor(guid)
+        try save()
+    }
+
+    private func validateVendor(_ draft: VendorDraft) throws -> String {
+        let name = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name.count <= 200 else { throw VendorEditError.invalidName }
+        return name
+    }
+
+    private static func toVendor(_ row: XMLBookDocument.VendorRow) -> Vendor {
+        Vendor(
+            guid: row.guid,
+            name: row.name,
+            vendorNumber: row.vendorNumber,
+            addressLine1: row.addressLine1,
+            phone: row.phone,
+            email: row.email,
+            notes: row.notes,
+            active: row.active
+        )
+    }
+
+    // MARK: - Bills
+
+    /// Every bill, most recently opened first.
+    public func bills() throws -> [Bill] {
+        guard let document else { throw BookStoreError.cannotOpen }
+        return document.bills()
+            .map { toBill($0, document: document) }
+            .sorted { $0.dateOpened > $1.dateOpened }
+    }
+
+    public func bill(_ guid: Guid) throws -> Bill? {
+        guard let document else { throw BookStoreError.cannotOpen }
+        guard let row = document.bill(guid) else { return nil }
+        return toBill(row, document: document)
+    }
+
+    private func toBill(_ row: XMLBookDocument.BillRow, document: XMLBookDocument) -> Bill {
+        let lines = document.billEntries(forBill: row.guid).map { entry in
+            BillLine(
+                guid: entry.guid,
+                date: entry.date,
+                description: entry.description,
+                quantity: entry.quantity,
+                unitPrice: entry.unitPrice,
+                expenseAccountGuid: entry.expenseAccountGuid
+            )
+        }
+        return Bill(
+            guid: row.guid,
+            billNumber: row.billNumber,
+            vendorGuid: row.vendorGuid,
+            dateOpened: row.dateOpened,
+            datePosted: row.datePosted,
+            notes: row.notes,
+            active: row.active,
+            lines: lines
+        )
+    }
+
+    @discardableResult
+    public func createBillDraft(
+        vendorGuid: Guid,
+        billNumber: String,
+        dateOpened: String,
+        notes: String = "",
+        ids: any IDGenerator
+    ) throws -> Guid {
+        guard let document else { throw BookStoreError.cannotOpen }
+        guard document.vendor(vendorGuid) != nil else {
+            throw BillEditError.unknownVendor(vendorGuid)
+        }
+        guard Self.isDate(dateOpened) else { throw JournalError.invalidDate }
+        let currency = try bookCurrency() ?? .usd
+        let guid = ids.guid()
+        document.createBill(
+            guid: guid,
+            billNumber: billNumber,
+            vendorGuid: vendorGuid,
+            dateOpened: dateOpened,
+            notes: notes,
+            currencyCode: currency.code
+        )
+        try save()
+        return guid
+    }
+
+    @discardableResult
+    public func addBillLine(
+        _ billGuid: Guid,
+        date: String,
+        description: String,
+        quantity: Money,
+        unitPrice: Money,
+        expenseAccountGuid: Guid,
+        ids: any IDGenerator
+    ) throws -> Guid {
+        guard let document else { throw BookStoreError.cannotOpen }
+        guard let bill = document.bill(billGuid) else {
+            throw BillEditError.unknownBill(billGuid)
+        }
+        guard !bill.isPosted else { throw BillEditError.alreadyPosted(billGuid) }
+        guard document.account(expenseAccountGuid) != nil else {
+            throw BillEditError.unknownAccount(expenseAccountGuid)
+        }
+        guard Self.isDate(date) else { throw JournalError.invalidDate }
+        let guid = ids.guid()
+        document.addBillEntry(
+            guid: guid,
+            billGuid: billGuid,
+            date: date,
+            description: description,
+            quantity: quantity,
+            unitPrice: unitPrice,
+            expenseAccountGuid: expenseAccountGuid
+        )
+        try save()
+        return guid
+    }
+
+    public func deleteBillLine(_ guid: Guid, billGuid: Guid) throws {
+        guard let document else { throw BookStoreError.cannotOpen }
+        guard let bill = document.bill(billGuid) else {
+            throw BillEditError.unknownBill(billGuid)
+        }
+        guard !bill.isPosted else { throw BillEditError.alreadyPosted(billGuid) }
+        document.deleteBillEntry(guid)
+        try save()
+    }
+
+    public func deleteBillDraft(_ guid: Guid) throws {
+        guard let document else { throw BookStoreError.cannotOpen }
+        guard let bill = document.bill(guid) else { throw BillEditError.unknownBill(guid) }
+        guard !bill.isPosted else { throw BillEditError.alreadyPosted(guid) }
+        document.deleteBill(guid)
+        try save()
+    }
+
+    /// Posts a draft bill: debits each line's expense account for its
+    /// amount and credits `payableAccountGuid` for the total -- the same
+    /// effect as desktop GnuCash's "Post Bill", and the one-way action
+    /// that turns a draft into permanent ledger history.
+    @discardableResult
+    public func postBill(
+        _ guid: Guid,
+        payableAccountGuid: Guid,
+        postedDate: String,
+        ids: any IDGenerator
+    ) throws -> Guid {
+        guard let document else { throw BookStoreError.cannotOpen }
+        guard let billRow = document.bill(guid) else { throw BillEditError.unknownBill(guid) }
+        guard !billRow.isPosted else { throw BillEditError.alreadyPosted(guid) }
+        guard document.account(payableAccountGuid) != nil else {
+            throw BillEditError.unknownAccount(payableAccountGuid)
+        }
+        guard Self.isDate(postedDate) else { throw JournalError.invalidDate }
+        let lines = document.billEntries(forBill: guid)
+        guard !lines.isEmpty else { throw BillEditError.noLines }
+
+        var total = Money.zero
+        var splits: [(accountGuid: Guid, value: Money, splitGuid: Guid)] = []
+        for line in lines {
+            total = try Money.add(total, line.amount)
+            splits.append((accountGuid: line.expenseAccountGuid, value: line.amount, splitGuid: ids.guid()))
+        }
+        splits.append((accountGuid: payableAccountGuid, value: total.negated(), splitGuid: ids.guid()))
+
+        let txGuid = ids.guid()
+        document.postTransaction(
+            guid: txGuid,
+            date: postedDate,
+            description: "Bill \(billRow.billNumber)",
+            splits: splits
+        )
+        document.markBillPosted(
+            guid,
+            postedDate: postedDate,
+            transactionGuid: txGuid,
+            payableAccountGuid: payableAccountGuid
         )
         try save()
         return txGuid

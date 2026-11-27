@@ -23,6 +23,8 @@ final class BookSession {
     private(set) var isLoading = false
     private(set) var customers: [Customer] = []
     private(set) var invoices: [Invoice] = []
+    private(set) var vendors: [Vendor] = []
+    private(set) var bills: [Bill] = []
     var lastError: String?
 
     private let ids: any IDGenerator
@@ -441,6 +443,137 @@ final class BookSession {
         }
     }
 
+    // MARK: - Vendors
+
+    func saveVendor(_ draft: VendorDraft, editing vendor: Vendor?) async -> Bool {
+        guard let store else { return false }
+        do {
+            if let vendor {
+                try await store.updateVendor(vendor.guid, with: draft)
+            } else {
+                try await store.createVendor(draft, ids: ids)
+            }
+            try await refresh()
+            return true
+        } catch {
+            lastError = Self.message(for: error)
+            return false
+        }
+    }
+
+    @discardableResult
+    func delete(_ vendor: Vendor) async -> Bool {
+        guard let store else { return false }
+        do {
+            try await store.deleteVendor(vendor.guid)
+            try await refresh()
+            return true
+        } catch {
+            lastError = Self.message(for: error)
+            return false
+        }
+    }
+
+    // MARK: - Bills
+
+    @discardableResult
+    func createBillDraft(
+        vendor: Vendor,
+        billNumber: String,
+        dateOpened: Date
+    ) async -> Guid? {
+        guard let store else { return nil }
+        do {
+            let guid = try await store.createBillDraft(
+                vendorGuid: vendor.guid,
+                billNumber: billNumber,
+                dateOpened: Self.isoDate(dateOpened),
+                ids: ids
+            )
+            try await refresh()
+            return guid
+        } catch {
+            lastError = Self.message(for: error)
+            return nil
+        }
+    }
+
+    @discardableResult
+    func addBillLine(
+        to bill: Bill,
+        date: Date,
+        description: String,
+        quantity: Money,
+        unitPrice: Money,
+        expenseAccount: Guid
+    ) async -> Bool {
+        guard let store else { return false }
+        do {
+            try await store.addBillLine(
+                bill.guid,
+                date: Self.isoDate(date),
+                description: description,
+                quantity: quantity,
+                unitPrice: unitPrice,
+                expenseAccountGuid: expenseAccount,
+                ids: ids
+            )
+            try await refresh()
+            return true
+        } catch {
+            lastError = Self.message(for: error)
+            return false
+        }
+    }
+
+    @discardableResult
+    func deleteBillLine(_ line: BillLine, from bill: Bill) async -> Bool {
+        guard let store else { return false }
+        do {
+            try await store.deleteBillLine(line.guid, billGuid: bill.guid)
+            try await refresh()
+            return true
+        } catch {
+            lastError = Self.message(for: error)
+            return false
+        }
+    }
+
+    @discardableResult
+    func deleteBillDraft(_ bill: Bill) async -> Bool {
+        guard let store else { return false }
+        do {
+            try await store.deleteBillDraft(bill.guid)
+            try await refresh()
+            return true
+        } catch {
+            lastError = Self.message(for: error)
+            return false
+        }
+    }
+
+    /// Posts a draft bill: debits each line's expense account for its
+    /// amount and credits the chosen payable account for the total, like
+    /// desktop GnuCash's "Post Bill". One-way -- a posted bill is
+    /// permanent ledger history and can no longer be edited or deleted.
+    @discardableResult
+    func postBill(_ bill: Bill, payableAccount: Guid, postedDate: Date) async -> Bool {
+        guard let store else { return false }
+        do {
+            try await store.postBill(
+                bill.guid,
+                payableAccountGuid: payableAccount,
+                postedDate: Self.isoDate(postedDate),
+                ids: ids
+            )
+            try await refresh()
+            return true
+        } catch {
+            lastError = Self.message(for: error)
+            return false
+        }
+    }
+
     private static func isoDate(_ date: Date) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -455,6 +588,8 @@ final class BookSession {
         transactions = try await store.transactions()
         customers = try await store.customers()
         invoices = try await store.invoices()
+        vendors = try await store.vendors()
+        bills = try await store.bills()
         totals = try AccountRollup.totals(accounts, balances: balances)
         if let currency = try await store.bookCurrency() {
             fraction = currency.fraction
@@ -534,6 +669,20 @@ final class BookSession {
         case InvoiceEditError.unknownAccount:
             return "Choose an account that still exists."
         case InvoiceEditError.unknownCustomer, InvoiceEditError.unknownInvoice:
+            return "That record is no longer in the book."
+        case VendorEditError.invalidName:
+            return "Enter a name of 200 characters or fewer."
+        case VendorEditError.vendorInUse:
+            return "This vendor has bills and cannot be deleted."
+        case VendorEditError.unknownVendor:
+            return "That vendor is no longer in the book."
+        case BillEditError.noLines:
+            return "Add at least one line before posting."
+        case BillEditError.alreadyPosted:
+            return "A posted bill cannot be edited or deleted."
+        case BillEditError.unknownAccount:
+            return "Choose an account that still exists."
+        case BillEditError.unknownVendor, BillEditError.unknownBill:
             return "That record is no longer in the book."
         case JournalError.invalidDate:
             return "Enter a valid date."
