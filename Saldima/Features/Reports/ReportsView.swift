@@ -17,9 +17,81 @@ private enum ReportPeriodPreset: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+private enum StatementKind: String, CaseIterable, Identifiable {
+    case balanceSheet = "Balance Sheet"
+    case incomeStatement = "Income Statement"
+    case cashFlow = "Cash Flow"
+    case trialBalance = "Trial Balance"
+
+    var id: String { rawValue }
+}
+
+/// One line of a printed financial statement: a label and a right-aligned,
+/// monospaced amount, with an indent level and an optional top rule and
+/// bold weight for subtotals/grand totals.
+private struct StatementLine: View {
+    let label: String
+    let amount: String
+    var indent: CGFloat = 0
+    var emphasized = false
+    var topRule = false
+
+    var body: some View {
+        VStack(spacing: 4) {
+            if topRule {
+                Divider()
+            }
+            HStack {
+                Text(label)
+                    .padding(.leading, indent)
+                    .fontWeight(emphasized ? .semibold : .regular)
+                Spacer()
+                Text(amount)
+                    .font(.callout.monospacedDigit())
+                    .fontWeight(emphasized ? .semibold : .regular)
+            }
+        }
+    }
+}
+
+private struct StatementSectionHeader: View {
+    let title: String
+
+    var body: some View {
+        Text(title.uppercased())
+            .font(.caption.bold())
+            .foregroundStyle(.secondary)
+    }
+}
+
+/// The title block every printed financial statement opens with: the book
+/// name, the statement's own title, and either "As of <date>" or "For the
+/// period <from> to <to>".
+private struct StatementHeader: View {
+    let bookName: String
+    let title: String
+    let periodLine: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(bookName)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(title)
+                .font(.title2.bold())
+            Text(periodLine)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 struct ReportsView: View {
     let session: BookSession
 
+    @State private var kind: StatementKind = .balanceSheet
     @State private var asOf = Date()
     @State private var preset: ReportPeriodPreset = .allTime
     @State private var customFrom = Date()
@@ -34,71 +106,255 @@ struct ReportsView: View {
 
     var body: some View {
         NavigationStack {
-            List {
+            Group {
                 if !session.isOpen || session.accounts.isEmpty {
                     ContentUnavailableView(
                         "No book open",
                         systemImage: "chart.bar",
                         description: Text("Open a book to see its reports.")
                     )
-                    .listRowBackground(Color.clear)
                 } else {
-                    Section("Period") {
-                        DatePicker(
-                            "Balance sheet & trial balance, as of",
-                            selection: $asOf,
-                            displayedComponents: .date
-                        )
-                        Picker("Profit & loss", selection: $preset) {
-                            ForEach(ReportPeriodPreset.allCases) { option in
-                                Text(option.rawValue).tag(option)
+                    List {
+                        Section("Statement") {
+                            Picker("Statement", selection: $kind) {
+                                ForEach(StatementKind.allCases) { option in
+                                    Text(option.rawValue).tag(option)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                        }
+                        Section("Period") {
+                            if kind == .balanceSheet || kind == .trialBalance {
+                                DatePicker("As of", selection: $asOf, displayedComponents: .date)
+                            } else {
+                                Picker("Range", selection: $preset) {
+                                    ForEach(ReportPeriodPreset.allCases) { option in
+                                        Text(option.rawValue).tag(option)
+                                    }
+                                }
+                                if preset == .custom {
+                                    DatePicker("From", selection: $customFrom, displayedComponents: .date)
+                                    DatePicker("To", selection: $customTo, displayedComponents: .date)
+                                }
                             }
                         }
-                        if preset == .custom {
-                            DatePicker("From", selection: $customFrom, displayedComponents: .date)
-                            DatePicker("To", selection: $customTo, displayedComponents: .date)
+                        Section {
+                            statement
                         }
-                    }
-                    Section("Trial balance") {
-                        ForEach(rows) { row in
-                            HStack {
-                                Text(row.name)
-                                Text(row.type.capitalized)
-                                    .font(.caption2)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(accountColor(row.type).opacity(0.16), in: Capsule())
-                                    .foregroundStyle(accountColor(row.type))
-                                Spacer()
-                                Text(session.formatted(row.value))
-                                    .font(.callout.monospacedDigit())
-                            }
-                        }
-                        LabeledContent("Debits", value: session.formatted(asOfTotals.debits))
-                        LabeledContent("Credits", value: session.formatted(asOfTotals.credits))
-                        LabeledContent(
-                            "Status",
-                            value: asOfTotals.debits == asOfTotals.credits ? "Balanced" : "Out of balance"
-                        )
-                    }
-                    Section("Balance sheet") {
-                        LabeledContent("Assets", value: session.formatted(asOfTotals.assets))
-                        LabeledContent("Liabilities", value: session.formatted(asOfTotals.liabilities))
-                        LabeledContent(
-                            "Equity",
-                            value: session.formatted(
-                                try! Money.add(asOfTotals.equity, asOfTotals.retained)
-                            )
-                        )
-                    }
-                    Section("Profit & loss") {
-                        LabeledContent("Revenue", value: session.formatted(periodTotals.revenue))
-                        LabeledContent("Expenses", value: session.formatted(periodTotals.expenses))
-                        LabeledContent("Net income", value: session.formatted(periodTotals.profit))
                     }
                 }
             }
             .navigationTitle("Reports")
+        }
+    }
+
+    @ViewBuilder
+    private var statement: some View {
+        switch kind {
+        case .balanceSheet:
+            balanceSheet
+        case .incomeStatement:
+            incomeStatement
+        case .cashFlow:
+            cashFlow
+        case .trialBalance:
+            trialBalance
+        }
+    }
+
+    // MARK: - Balance sheet
+
+    @ViewBuilder
+    private var balanceSheet: some View {
+        let balances = asOfBalances
+        let assets = sectionLines(types: ["ASSET", "BANK", "CASH", "RECEIVABLE"], balances: balances)
+        let liabilities = sectionLines(types: ["LIABILITY", "CREDIT", "PAYABLE"], balances: balances, negate: true)
+        let equity = sectionLines(types: ["EQUITY"], balances: balances, negate: true)
+        let totals = asOfTotals
+        let retainedEarnings = (try? Money.add(totals.equity, totals.retained)) ?? totals.equity
+        let totalLiabilitiesAndEquity = (try? Money.add(totals.liabilities, retainedEarnings)) ?? totals.liabilities
+
+        StatementHeader(
+            bookName: session.bookName,
+            title: "Balance Sheet",
+            periodLine: "As of \(Self.isoDay(asOf))"
+        )
+        StatementSectionHeader(title: "Assets")
+        ForEach(assets, id: \.name) { line in
+            StatementLine(label: line.name, amount: session.formatted(line.amount), indent: 16)
+        }
+        StatementLine(label: "Total Assets", amount: session.formatted(totals.assets), emphasized: true, topRule: true)
+
+        StatementSectionHeader(title: "Liabilities")
+        ForEach(liabilities, id: \.name) { line in
+            StatementLine(label: line.name, amount: session.formatted(line.amount), indent: 16)
+        }
+        StatementLine(label: "Total Liabilities", amount: session.formatted(totals.liabilities), emphasized: true, topRule: true)
+
+        StatementSectionHeader(title: "Equity")
+        ForEach(equity, id: \.name) { line in
+            StatementLine(label: line.name, amount: session.formatted(line.amount), indent: 16)
+        }
+        StatementLine(label: "Retained Earnings", amount: session.formatted(totals.retained), indent: 16)
+        StatementLine(label: "Total Equity", amount: session.formatted(retainedEarnings), emphasized: true, topRule: true)
+
+        StatementLine(
+            label: "Total Liabilities & Equity",
+            amount: session.formatted(totalLiabilitiesAndEquity),
+            emphasized: true,
+            topRule: true
+        )
+    }
+
+    // MARK: - Income statement
+
+    @ViewBuilder
+    private var incomeStatement: some View {
+        let balances = periodBalances
+        let revenue = sectionLines(types: ["INCOME"], balances: balances, negate: true)
+        let expenses = sectionLines(types: ["EXPENSE"], balances: balances)
+        let totals = periodTotals
+
+        StatementHeader(
+            bookName: session.bookName,
+            title: "Income Statement",
+            periodLine: periodLine
+        )
+        StatementSectionHeader(title: "Revenue")
+        ForEach(revenue, id: \.name) { line in
+            StatementLine(label: line.name, amount: session.formatted(line.amount), indent: 16)
+        }
+        StatementLine(label: "Total Revenue", amount: session.formatted(totals.revenue), emphasized: true, topRule: true)
+
+        StatementSectionHeader(title: "Expenses")
+        ForEach(expenses, id: \.name) { line in
+            StatementLine(label: line.name, amount: session.formatted(line.amount), indent: 16)
+        }
+        StatementLine(label: "Total Expenses", amount: session.formatted(totals.expenses), emphasized: true, topRule: true)
+
+        StatementLine(label: "Net Income", amount: session.formatted(totals.profit), emphasized: true, topRule: true)
+    }
+
+    // MARK: - Cash flow
+
+    @ViewBuilder
+    private var cashFlow: some View {
+        let cashGuids = Set(flat.filter { $0.accountType == "BANK" || $0.accountType == "CASH" }.map(\.guid))
+        let names = Dictionary(uniqueKeysWithValues: flat.map { ($0.guid, $0.name) })
+        let range = periodRange
+        let statement = cashFlowStatement(
+            transactions: session.transactions,
+            cashAccountGuids: cashGuids,
+            accountNames: names,
+            from: range.from,
+            to: range.to
+        )
+        // No lower bound means "since the book began" -- by definition the
+        // cash accounts started at zero, so there is no real prior balance
+        // to look up.
+        let beginningCash = range.from.map {
+            cashTotal(in: balances(to: Self.dayBefore($0)), accounts: cashGuids)
+        } ?? Money.zero
+        let endingCash = cashTotal(in: balances(to: range.to), accounts: cashGuids)
+
+        StatementHeader(
+            bookName: session.bookName,
+            title: "Statement of Cash Flows",
+            periodLine: periodLine
+        )
+        StatementLine(label: "Cash at beginning of period", amount: session.formatted(beginningCash))
+
+        StatementSectionHeader(title: "Cash inflows")
+        if statement.inflows.isEmpty {
+            StatementLine(label: "None", amount: "", indent: 16)
+        }
+        ForEach(statement.inflows) { line in
+            StatementLine(label: line.category, amount: session.formatted(line.amount), indent: 16)
+        }
+
+        StatementSectionHeader(title: "Cash outflows")
+        if statement.outflows.isEmpty {
+            StatementLine(label: "None", amount: "", indent: 16)
+        }
+        ForEach(statement.outflows) { line in
+            StatementLine(label: line.category, amount: session.formatted(line.amount), indent: 16)
+        }
+
+        StatementLine(
+            label: "Net Change in Cash",
+            amount: session.formatted(statement.netCashFlow),
+            emphasized: true,
+            topRule: true
+        )
+        StatementLine(label: "Cash at end of period", amount: session.formatted(endingCash), emphasized: true)
+    }
+
+    // MARK: - Trial balance
+
+    @ViewBuilder
+    private var trialBalance: some View {
+        StatementHeader(
+            bookName: session.bookName,
+            title: "Trial Balance",
+            periodLine: "As of \(Self.isoDay(asOf))"
+        )
+        ForEach(rows) { row in
+            HStack {
+                Text(row.name)
+                Text(row.type.capitalized)
+                    .font(.caption2)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(accountColor(row.type).opacity(0.16), in: Capsule())
+                    .foregroundStyle(accountColor(row.type))
+                Spacer()
+                Text(session.formatted(row.value))
+                    .font(.callout.monospacedDigit())
+            }
+        }
+        StatementLine(label: "Total Debits", amount: session.formatted(asOfTotals.debits), topRule: true)
+        StatementLine(label: "Total Credits", amount: session.formatted(asOfTotals.credits))
+        StatementLine(
+            label: "Status",
+            amount: asOfTotals.debits == asOfTotals.credits ? "Balanced" : "Out of balance",
+            emphasized: true
+        )
+    }
+
+    // MARK: - Shared helpers
+
+    private var periodLine: String {
+        let range = periodRange
+        switch (range.from, range.to) {
+        case (nil, nil):
+            return "All time"
+        case (let from?, let to?):
+            return "For the period \(from) to \(to)"
+        case (let from?, nil):
+            return "Since \(from)"
+        case (nil, let to?):
+            return "Through \(to)"
+        }
+    }
+
+    private func sectionLines(
+        types: Set<String>,
+        balances: [Guid: Money],
+        negate: Bool = false
+    ) -> [(name: String, amount: Money)] {
+        flat
+            .filter { types.contains($0.accountType) }
+            .compactMap { account -> (name: String, amount: Money)? in
+                guard let balance = balances[account.guid], balance != .zero else { return nil }
+                return (account.name, negate ? balance.negated() : balance)
+            }
+            .sorted { $0.name < $1.name }
+    }
+
+    private func cashTotal(in balances: [Guid: Money], accounts: Set<Guid>) -> Money {
+        accounts.reduce(Money.zero) { sum, guid in
+            guard let balance = balances[guid] else { return sum }
+            return (try? Money.add(sum, balance)) ?? sum
         }
     }
 
@@ -114,6 +370,20 @@ struct ReportsView: View {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter.string(from: date)
+    }
+
+    /// One calendar day before an ISO day string -- used for "cash at the
+    /// start of the period" (the balance up to, but not including, `from`).
+    private static func dayBefore(_ isoDay: String) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        guard let date = formatter.date(from: isoDay),
+              let previous = Calendar(identifier: .gregorian).date(byAdding: .day, value: -1, to: date)
+        else {
+            return isoDay
+        }
+        return Self.isoDay(previous)
     }
 
     /// Balances from every split whose transaction date falls within

@@ -68,12 +68,16 @@ struct AccountsView: View {
         case newBook
         case account(Account?)
         case settings
+        case register
+        case reports
 
         var id: String {
             switch self {
             case .newBook: "new-book"
             case .account(let account): account?.guid.rawValue ?? "new-account"
             case .settings: "settings"
+            case .register: "register"
+            case .reports: "reports"
             }
         }
     }
@@ -132,6 +136,19 @@ struct AccountsView: View {
                                         .joined(separator: ",")
                                 }
                                 Divider()
+                                Button {
+                                    sheet = .register
+                                } label: {
+                                    Label("Register", systemImage: "list.bullet.rectangle")
+                                }
+                                .accessibilityIdentifier("accounts.register")
+                                Button {
+                                    sheet = .reports
+                                } label: {
+                                    Label("Reports", systemImage: "chart.bar")
+                                }
+                                .accessibilityIdentifier("accounts.reports")
+                                Divider()
                             }
                             Button {
                                 sheet = .settings
@@ -166,6 +183,10 @@ struct AccountsView: View {
                         )
                     case .settings:
                         SettingsView(session: session)
+                    case .register:
+                        RegisterView(session: session)
+                    case .reports:
+                        ReportsView(session: session)
                     }
                 }
                 .alert(
