@@ -8,6 +8,14 @@ struct RegisterView: View {
     @State private var composing = false
     @State private var voidingTransaction: StoredTransaction?
     @State private var voidReason = ""
+    @State private var searchText = ""
+
+    private var filteredTransactions: [StoredTransaction] {
+        let names = Dictionary(uniqueKeysWithValues: session.accountOptions().map { ($0.guid, $0.name) })
+        return session.transactions.filter {
+            matchesJournalSearch($0, query: searchText, accountNames: names)
+        }
+    }
 
     var body: some View {
         NavigationStack {
@@ -22,9 +30,11 @@ struct RegisterView: View {
                             .buttonStyle(.glassProminent)
                             .disabled(!session.isOpen)
                     }
+                } else if filteredTransactions.isEmpty {
+                    ContentUnavailableView.search(text: searchText)
                 } else {
                     List {
-                        ForEach(session.transactions) { transaction in
+                        ForEach(filteredTransactions) { transaction in
                             VStack(alignment: .leading, spacing: 6) {
                                 HStack {
                                     Text(transaction.description)
@@ -78,6 +88,7 @@ struct RegisterView: View {
                 }
             }
             .navigationTitle("Register")
+            .searchable(text: $searchText, prompt: "Description, memo or account")
             .toolbar {
                 if session.isOpen {
                     ToolbarItem(placement: .primaryAction) {
