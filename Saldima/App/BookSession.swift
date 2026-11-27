@@ -31,6 +31,7 @@ final class BookSession {
     /// `refresh()` runs (on open and after every mutation). No background
     /// job exists.
     private(set) var dueScheduledInstances: [DueScheduledInstance] = []
+    private(set) var budgets: [Budget] = []
     var lastError: String?
 
     private let ids: any IDGenerator
@@ -365,6 +366,91 @@ final class BookSession {
         guard let store else { return false }
         do {
             try await store.skipScheduledInstance(instance.scheduledTransactionGuid, date: instance.date)
+            try await refresh()
+            return true
+        } catch {
+            lastError = Self.message(for: error)
+            return false
+        }
+    }
+
+    // MARK: - Budgets
+
+    /// Accounts a budget grid shows: visible, non-placeholder, non-hidden
+    /// -- the same filter the web engine's own `budgetableAccountRows` uses.
+    func budgetableAccountOptions() -> [(guid: Guid, name: String)] {
+        func walk(_ nodes: [Account], into rows: inout [(Guid, String)]) {
+            for node in nodes {
+                if node.accountType != "ROOT" && !node.placeholder && !node.hidden {
+                    rows.append((node.guid, node.name))
+                }
+                walk(node.children, into: &rows)
+            }
+        }
+        var rows: [(Guid, String)] = []
+        walk(accounts, into: &rows)
+        return rows.sorted { $0.name < $1.name }
+    }
+
+    @discardableResult
+    func saveBudget(_ draft: BudgetDraft) async -> Bool {
+        guard let store else { return false }
+        do {
+            try await store.createBudget(draft, ids: ids)
+            try await refresh()
+            return true
+        } catch {
+            lastError = Self.message(for: error)
+            return false
+        }
+    }
+
+    @discardableResult
+    func updateBudget(_ guid: Guid, with draft: BudgetEditDraft) async -> Bool {
+        guard let store else { return false }
+        do {
+            try await store.updateBudget(guid, with: draft)
+            try await refresh()
+            return true
+        } catch {
+            lastError = Self.message(for: error)
+            return false
+        }
+    }
+
+    @discardableResult
+    func delete(_ budget: Budget) async -> Bool {
+        guard let store else { return false }
+        do {
+            try await store.deleteBudget(budget.guid)
+            try await refresh()
+            return true
+        } catch {
+            lastError = Self.message(for: error)
+            return false
+        }
+    }
+
+    /// Builds the whole accounts x periods grid for `budget` in one call,
+    /// over every currently budgetable account.
+    func budgetGrid(for budget: Budget) async -> BudgetGrid? {
+        guard let store else { return nil }
+        do {
+            return try await store.budgetGrid(budget.guid, accountGuids: budgetableAccountOptions().map(\.guid))
+        } catch {
+            lastError = Self.message(for: error)
+            return nil
+        }
+    }
+
+    /// One whole-grid save -- matching the web engine's own
+    /// `updateBudgetAmountsRoute`, which the web PR chose over saving each
+    /// cell separately.
+    @discardableResult
+    func saveBudgetAmounts(_ guid: Guid, edits: [BookStore.BudgetAmountEdit]) async -> Bool {
+        guard let store else { return false }
+        do {
+            try await store.saveBudgetAmounts(guid, edits: edits)
             try await refresh()
             return true
         } catch {
@@ -741,6 +827,7 @@ final class BookSession {
         vendors = try await store.vendors()
         bills = try await store.bills()
         scheduledTransactions = try await store.scheduledTransactions()
+        budgets = try await store.budgets()
         totals = try AccountRollup.totals(accounts, balances: balances)
         if let currency = try await store.bookCurrency() {
             fraction = currency.fraction
@@ -859,6 +946,14 @@ final class BookSession {
             return "Enter a valid start date and recurrence."
         case ScheduledTransactionError.unknownScheduledTransaction:
             return "That schedule is no longer in the book."
+        case BudgetError.invalidName:
+            return "Enter a name."
+        case BudgetError.invalidPeriodCount:
+            return "Enter a whole number of periods, 1 or more."
+        case BudgetError.invalidPeriodIndex, BudgetError.recurrenceExhausted:
+            return "That budget period is invalid."
+        case BudgetError.unknownBudget:
+            return "That budget is no longer in the book."
         default:
             return error.localizedDescription
         }

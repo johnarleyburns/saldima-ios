@@ -60,6 +60,41 @@ struct ScheduledTransactionRow: Sendable, Hashable, Identifiable {
     var id: Guid { guid }
 }
 
+/// A GnuCash `GncBudget` (desktop's "Budgets"): a recurrence plus a count of
+/// periods. Per-account-per-period budgeted amounts live on the budget's own
+/// KVP frame (`budgetAmount`/`setBudgetAmount`), not here -- matching real
+/// GnuCash, where an unset period is simply absent, never a zero. Mirrors
+/// the web engine's locked design (`johnarleyburns/saldima#102`). Milestone
+/// 1 scope: no per-period notes, no book-level default-budget option, no
+/// estimate-from-actuals autofill.
+struct BudgetRow: Sendable, Hashable, Identifiable {
+    let guid: Guid
+    let name: String
+    let description: String
+    let periodCount: Int
+    let recurrence: Recurrence
+    var id: Guid { guid }
+}
+
+/// One period's `[start, end)` range, from `XMLBookDocument.periodRange`.
+struct BudgetPeriodRangeRow: Sendable, Hashable {
+    let start: String
+    let end: String
+}
+
+/// Thrown only by the budget engine's own computed reads
+/// (`periodRange`/`budgetActual`) -- every budget mutation is otherwise
+/// non-throwing, trusting `BookStore` to validate first, the same split of
+/// responsibility scheduled transactions already use.
+enum BudgetRangeError: Error, Equatable, Sendable {
+    case unknownBudget
+    case invalidPeriodIndex
+    /// A period's end needs one more recurrence instance than exists --
+    /// only reachable with a non-repeating ("once") recurrence, which
+    /// desktop GnuCash's own budget editor never offers.
+    case recurrenceExhausted
+}
+
 final class XMLBookDocument {
     struct AccountRow: Sendable, Hashable {
         let guid: Guid
@@ -246,6 +281,7 @@ final class XMLBookDocument {
     private var invoiceIndex: [Guid: XNode] = [:]
     private var vendorIndex: [Guid: XNode] = [:]
     private var scheduledTransactionIndex: [Guid: XNode] = [:]
+    private var budgetIndex: [Guid: XNode] = [:]
 
     private init(root: XNode, book: XNode) {
         self.root = root
@@ -399,6 +435,12 @@ final class XMLBookDocument {
         for node in children(book, localName: "schedxaction") {
             if let guid = guidValue(node, localName: "id") {
                 scheduledTransactionIndex[guid] = node
+            }
+        }
+        budgetIndex.removeAll()
+        for node in children(book, localName: "budget") {
+            if let guid = guidValue(node, localName: "id") {
+                budgetIndex[guid] = node
             }
         }
     }
@@ -837,6 +879,236 @@ final class XMLBookDocument {
         }
         let currentCount = firstChild(node, localName: "instanceCount").map(decodedText).flatMap(Int.init) ?? 0
         setChildText(node, localName: "instanceCount", tag: "sx:instanceCount", value: String(currentCount + 1))
+    }
+
+    // MARK: - Reading: budgets
+
+    func budgets() -> [BudgetRow] {
+        children(book, localName: "budget").compactMap(budgetRow)
+    }
+
+    func budget(_ guid: Guid) -> BudgetRow? {
+        budgetIndex[guid].flatMap(budgetRow)
+    }
+
+    private func budgetRow(_ node: XNode) -> BudgetRow? {
+        guard let guid = guidValue(node, localName: "id"),
+              let name = firstChild(node, localName: "name").map(decodedText),
+              let periodCount = firstChild(node, localName: "num-periods").map(decodedText).flatMap(Int.init),
+              // Unlike sx:schedule's inner gnc:recurrence, bgt:recurrence carries
+              // the recurrence:* children directly -- no further unwrapping.
+              let recurrenceNode = firstChild(node, localName: "recurrence"),
+              let multiplier = firstChild(recurrenceNode, localName: "mult").map(decodedText).flatMap(Int.init),
+              let periodTypeText = firstChild(recurrenceNode, localName: "period_type").map(decodedText),
+              let periodType = PeriodType(xmlValue: periodTypeText),
+              let recurrenceStartNode = firstChild(recurrenceNode, localName: "start"),
+              let recurrenceStart = gdateValue(recurrenceStartNode)
+        else {
+            return nil
+        }
+        let description = firstChild(node, localName: "description").map(decodedText) ?? ""
+        let weekendAdjustText = firstChild(recurrenceNode, localName: "weekend_adj").map(decodedText)
+        let weekendAdjust = weekendAdjustText.flatMap { WeekendAdjust(rawValue: $0) } ?? .none
+        return BudgetRow(
+            guid: guid,
+            name: name,
+            description: description,
+            periodCount: periodCount,
+            recurrence: Recurrence(
+                periodType: periodType,
+                multiplier: multiplier,
+                start: recurrenceStart,
+                weekendAdjust: weekendAdjust
+            )
+        )
+    }
+
+    /// Period *N*'s `[start, end)` range: `instance(N)` to `instance(N+1)`,
+    /// where `instance(0)` is the recurrence's own start and `instance(k)`
+    /// is `nextInstance` applied `k` times -- matching desktop GnuCash's
+    /// `recurrenceGetPeriodTime`, and the web engine's own `periodRange`.
+    func periodRange(_ budget: BudgetRow, periodIndex: Int) throws -> BudgetPeriodRangeRow {
+        guard periodIndex >= 0 else { throw BudgetRangeError.invalidPeriodIndex }
+        return BudgetPeriodRangeRow(
+            start: try nthRecurrenceInstance(budget.recurrence, index: periodIndex),
+            end: try nthRecurrenceInstance(budget.recurrence, index: periodIndex + 1)
+        )
+    }
+
+    private func nthRecurrenceInstance(_ recurrence: Recurrence, index: Int) throws -> String {
+        var date = recurrence.start
+        for _ in 0..<index {
+            guard let next = try nextInstance(recurrence, after: date) else {
+                throw BudgetRangeError.recurrenceExhausted
+            }
+            date = next
+        }
+        return date
+    }
+
+    /// The budget's own per-account KVP frame (`bgt:slots` -> one `slot`
+    /// keyed by the account's guid, `type="frame"`, holding one nested
+    /// `slot` per set period keyed by its number) -- the exact shape
+    /// `make_period_data_path` writes in desktop GnuCash's own
+    /// `gnc-budget.cpp`. `nil` if the account has never had an amount set.
+    private func findBudgetAccountFrame(_ budgetNode: XNode, accountGuid: Guid) -> XNode? {
+        guard let slots = firstChild(budgetNode, localName: "slots"),
+              let accountSlot = findSlot(slots, key: accountGuid.rawValue)
+        else {
+            return nil
+        }
+        return firstChild(accountSlot, localName: "value")
+    }
+
+    /// Creates `bgt:slots` the first time any amount is set on this budget
+    /// -- it never exists right after `createBudget`, matching the web
+    /// engine's optional `bgt:slots` (present only once something sets it).
+    private func findOrCreateSlots(_ owner: XNode, tag: String) -> XNode {
+        if let existing = firstChild(owner, localName: "slots") { return existing }
+        let created = XNode(name: "\(tag):slots")
+        owner.addChild(created)
+        return created
+    }
+
+    private func findOrCreateBudgetAccountFrame(_ budgetNode: XNode, accountGuid: Guid) -> XNode {
+        let slots = findOrCreateSlots(budgetNode, tag: "bgt")
+        if let frame = findBudgetAccountFrame(budgetNode, accountGuid: accountGuid) { return frame }
+        let frame = XNode(name: "slot:value", attributes: ["type": "frame"])
+        slots.addChild(Self.kvpSlot(accountGuid.rawValue, frame))
+        return frame
+    }
+
+    /// Removes the whole per-account frame once its last period is cleared.
+    private func removeBudgetAccountFrameIfEmpty(_ budgetNode: XNode, accountGuid: Guid) {
+        guard let slots = firstChild(budgetNode, localName: "slots"),
+              let accountSlot = findSlot(slots, key: accountGuid.rawValue),
+              let frame = firstChild(accountSlot, localName: "value"),
+              frame.children.isEmpty
+        else {
+            return
+        }
+        accountSlot.detach()
+    }
+
+    /// `nil` if this account's period has never been set -- never a zero placeholder.
+    func budgetAmount(_ budgetGuid: Guid, accountGuid: Guid, periodIndex: Int) -> Money? {
+        guard let budgetNode = budgetIndex[budgetGuid],
+              let frame = findBudgetAccountFrame(budgetNode, accountGuid: accountGuid)
+        else {
+            return nil
+        }
+        let periodKey = String(periodIndex)
+        guard
+            let slot = children(frame, localName: "slot")
+                .first(where: { firstChild($0, localName: "key").map(decodedText) == periodKey }),
+            let valueNode = firstChild(slot, localName: "value")
+        else {
+            return nil
+        }
+        return rational(decodedText(valueNode))
+    }
+
+    /// Sum of this account's split values whose transaction date falls in
+    /// the period's `[start, end)` range. Desktop GnuCash computes
+    /// "actual" the same way every time, live -- it's never stored.
+    func budgetActual(_ budgetGuid: Guid, accountGuid: Guid, periodIndex: Int) throws -> Money {
+        guard let budget = budget(budgetGuid) else { throw BudgetRangeError.unknownBudget }
+        let range = try periodRange(budget, periodIndex: periodIndex)
+        var total = Money.zero
+        for transaction in transactions() {
+            guard transaction.date >= range.start, transaction.date < range.end else { continue }
+            for split in transaction.splits where split.accountGuid == accountGuid {
+                total = (try? Money.add(total, split.value)) ?? total
+            }
+        }
+        return total
+    }
+
+    // MARK: - Mutating: budgets
+
+    /// `<gnc:budget version="2.0.0">` in the web's exact child order: id,
+    /// name, description, num-periods, recurrence, [slots -- optional,
+    /// created lazily by the first `setBudgetAmount`].
+    @discardableResult
+    func createBudget(
+        guid: Guid,
+        name: String,
+        description: String,
+        periodCount: Int,
+        recurrence: Recurrence
+    ) -> BudgetRow {
+        let node = XNode(name: "gnc:budget", attributes: ["version": "2.0.0"])
+        node.addChild(leaf("bgt:id", guid.rawValue, attributes: ["type": "guid"]))
+        node.addChild(leaf("bgt:name", name))
+        node.addChild(leaf("bgt:description", description))
+        node.addChild(leaf("bgt:num-periods", String(periodCount)))
+        node.addChild(Self.buildBudgetRecurrenceNode(recurrence))
+        book.addChild(node)
+        budgetIndex[guid] = node
+        return budgetRow(node)!
+    }
+
+    /// Patches name, description and periodCount only -- the recurrence is
+    /// immutable after creation, matching the web engine's own
+    /// `UpdateBudgetInput` and the same convention scheduled transactions use.
+    func updateBudget(_ guid: Guid, name: String, description: String, periodCount: Int) {
+        guard let node = budgetIndex[guid] else { return }
+        setChildText(node, localName: "name", tag: "bgt:name", value: name)
+        setChildText(node, localName: "description", tag: "bgt:description", value: description)
+        setChildText(node, localName: "num-periods", tag: "bgt:num-periods", value: String(periodCount))
+    }
+
+    func deleteBudget(_ guid: Guid) {
+        guard let node = budgetIndex[guid] else { return }
+        node.detach()
+        budgetIndex.removeValue(forKey: guid)
+    }
+
+    /// Sets (or, with `amount: nil`, removes) one account's budgeted amount
+    /// for one period. Matching real GnuCash: an unset period is simply
+    /// absent from the KVP tree, never a zero placeholder.
+    func setBudgetAmount(_ budgetGuid: Guid, accountGuid: Guid, periodIndex: Int, amount: Money?) {
+        guard let budgetNode = budgetIndex[budgetGuid] else { return }
+        let periodKey = String(periodIndex)
+
+        guard let amount else {
+            guard let frame = findBudgetAccountFrame(budgetNode, accountGuid: accountGuid) else { return }
+            if let existing = children(frame, localName: "slot")
+                .first(where: { firstChild($0, localName: "key").map(decodedText) == periodKey })
+            {
+                existing.detach()
+            }
+            removeBudgetAccountFrameIfEmpty(budgetNode, accountGuid: accountGuid)
+            return
+        }
+
+        let frame = findOrCreateBudgetAccountFrame(budgetNode, accountGuid: accountGuid)
+        let valueText = "\(amount.num)/\(amount.denom)"
+        if let existing = children(frame, localName: "slot")
+            .first(where: { firstChild($0, localName: "key").map(decodedText) == periodKey })
+        {
+            firstChild(existing, localName: "value")?.text = escapeXml(valueText)
+        } else {
+            let slot = XNode(name: "slot")
+            slot.addChild(leaf("slot:key", periodKey))
+            slot.addChild(leaf("slot:value", valueText, attributes: ["type": "numeric"]))
+            frame.addChild(slot)
+        }
+    }
+
+    /// `<bgt:recurrence version="1.0.0">` carries the `recurrence:*`
+    /// children directly -- unlike `sx:schedule`'s inner `gnc:recurrence`,
+    /// budgets have no separate wrapper element at all, confirmed against
+    /// desktop GnuCash's own `gnc-budget-xml-v2.cpp`.
+    private static func buildBudgetRecurrenceNode(_ recurrence: Recurrence) -> XNode {
+        let node = XNode(name: "bgt:recurrence", attributes: ["version": "1.0.0"])
+        node.addChild(leaf("recurrence:mult", String(recurrence.multiplier)))
+        node.addChild(leaf("recurrence:period_type", recurrence.periodType.xmlValue))
+        node.addChild(gdateNode(tag: "recurrence:start", date: recurrence.start))
+        if recurrence.weekendAdjust != .none {
+            node.addChild(leaf("recurrence:weekend_adj", recurrence.weekendAdjust.rawValue))
+        }
+        return node
     }
 
     // MARK: - Mutating: accounts
