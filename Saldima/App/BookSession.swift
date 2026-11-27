@@ -232,6 +232,40 @@ final class BookSession {
         }
     }
 
+    /// Voids a transaction (GnuCash's "Void Transaction", not a delete): the
+    /// original splits are preserved for audit but zeroed, so the
+    /// transaction stops affecting any balance.
+    @discardableResult
+    func voidTransaction(_ guid: Guid, reason: String) async -> Bool {
+        guard let store else { return false }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        let voidTime = "\(formatter.string(from: Date())) 00:00:00 +0000"
+        do {
+            try await store.voidTransaction(guid, reason: reason, voidTime: voidTime)
+            try await refresh()
+            return true
+        } catch {
+            lastError = Self.message(for: error)
+            return false
+        }
+    }
+
+    /// Reverses `voidTransaction`.
+    @discardableResult
+    func unvoidTransaction(_ guid: Guid) async -> Bool {
+        guard let store else { return false }
+        do {
+            try await store.unvoidTransaction(guid)
+            try await refresh()
+            return true
+        } catch {
+            lastError = Self.message(for: error)
+            return false
+        }
+    }
+
     // MARK: - Receipts
 
     /// A receipt image's path is stored relative to the book's own
@@ -690,6 +724,12 @@ final class BookSession {
             return "A reconcile date is required to mark a split reconciled."
         case JournalError.unknownSplit, JournalError.unknownTransaction:
             return "That split is no longer in the book."
+        case JournalError.blankVoidReason:
+            return "Enter a reason to void this transaction."
+        case JournalError.alreadyVoided:
+            return "This transaction is already voided."
+        case JournalError.notVoided:
+            return "This transaction isn't voided."
         default:
             return error.localizedDescription
         }

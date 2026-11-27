@@ -6,6 +6,8 @@ import SaldimaCore
 struct RegisterView: View {
     let session: BookSession
     @State private var composing = false
+    @State private var voidingTransaction: StoredTransaction?
+    @State private var voidReason = ""
 
     var body: some View {
         NavigationStack {
@@ -27,8 +29,21 @@ struct RegisterView: View {
                                 HStack {
                                     Text(transaction.description)
                                         .font(.headline)
+                                    if transaction.voided {
+                                        Text("VOID")
+                                            .font(.caption2.bold())
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
+                                            .background(.red.opacity(0.15), in: Capsule())
+                                            .foregroundStyle(.red)
+                                    }
                                     Spacer()
                                     Text(String(transaction.date.prefix(10)))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                if let reason = transaction.voidReason {
+                                    Text("Voided: \(reason)")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
@@ -44,6 +59,20 @@ struct RegisterView: View {
                                 }
                             }
                             .padding(.vertical, 4)
+                            .swipeActions(edge: .trailing) {
+                                if transaction.voided {
+                                    Button("Unvoid") {
+                                        Task { await session.unvoidTransaction(transaction.guid) }
+                                    }
+                                    .tint(.blue)
+                                } else {
+                                    Button("Void") {
+                                        voidReason = ""
+                                        voidingTransaction = transaction
+                                    }
+                                    .tint(.orange)
+                                }
+                            }
                         }
                     }
                 }
@@ -63,6 +92,24 @@ struct RegisterView: View {
             }
             .sheet(isPresented: $composing) {
                 NewTransactionSheet(session: session)
+            }
+            .alert(
+                "Void transaction",
+                isPresented: Binding(
+                    get: { voidingTransaction != nil },
+                    set: { isPresented in if !isPresented { voidingTransaction = nil } }
+                )
+            ) {
+                TextField("Reason", text: $voidReason)
+                Button("Cancel", role: .cancel) { voidingTransaction = nil }
+                Button("Void") {
+                    if let transaction = voidingTransaction {
+                        Task { await session.voidTransaction(transaction.guid, reason: voidReason) }
+                    }
+                    voidingTransaction = nil
+                }
+            } message: {
+                Text("The transaction stays in the register for audit, but no longer affects any balance.")
             }
         }
     }

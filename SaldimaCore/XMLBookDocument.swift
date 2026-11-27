@@ -35,10 +35,12 @@ final class XMLBookDocument {
         let value: Money
         let guid: Guid?
         let memo: String
-        /// `"n"` not reconciled, `"c"` cleared, `"y"` reconciled -- GnuCash's own codes.
+        /// `"n"` not reconciled, `"c"` cleared, `"y"` reconciled, `"v"` voided -- GnuCash's own codes.
         let reconcileState: String
         /// Set only once `reconcileState` is `"y"`; `YYYY-MM-DD HH:MM:SS +ZZZZ`.
         let reconcileDate: String?
+        /// Pre-void value, set only while the parent transaction is voided.
+        let voidFormerValue: Money?
 
         init(
             accountGuid: Guid,
@@ -46,7 +48,8 @@ final class XMLBookDocument {
             guid: Guid? = nil,
             memo: String = "",
             reconcileState: String = "n",
-            reconcileDate: String? = nil
+            reconcileDate: String? = nil,
+            voidFormerValue: Money? = nil
         ) {
             self.accountGuid = accountGuid
             self.value = value
@@ -54,6 +57,7 @@ final class XMLBookDocument {
             self.memo = memo
             self.reconcileState = reconcileState
             self.reconcileDate = reconcileDate
+            self.voidFormerValue = voidFormerValue
         }
     }
 
@@ -67,6 +71,31 @@ final class XMLBookDocument {
         /// book's own directory (so it survives the sandbox container
         /// moving between app launches), but reads whatever is there.
         let docLink: String?
+        /// True once `voidTransaction` has run; every split's value is zeroed.
+        let voided: Bool
+        let voidReason: String?
+        /// `YYYY-MM-DD HH:MM:SS +ZZZZ`, set only while voided.
+        let voidTime: String?
+
+        init(
+            guid: Guid,
+            date: String,
+            description: String,
+            splits: [SplitRow],
+            docLink: String? = nil,
+            voided: Bool = false,
+            voidReason: String? = nil,
+            voidTime: String? = nil
+        ) {
+            self.guid = guid
+            self.date = date
+            self.description = description
+            self.splits = splits
+            self.docLink = docLink
+            self.voided = voided
+            self.voidReason = voidReason
+            self.voidTime = voidTime
+        }
     }
 
     struct CurrencyInfo: Sendable, Hashable {
@@ -436,7 +465,8 @@ final class XMLBookDocument {
                 guid: splitGuid,
                 memo: memo,
                 reconcileState: reconcileState,
-                reconcileDate: reconcileDate
+                reconcileDate: reconcileDate,
+                voidFormerValue: readNumericSlot(splitNode, key: "void-former-value")
             )
         }
         let docLink = firstChild(node, localName: "slots")
@@ -446,7 +476,16 @@ final class XMLBookDocument {
             }
             .flatMap { firstChild($0, localName: "value") }
             .map(decodedText)
-        return TransactionRow(guid: guid, date: date, description: description, splits: splits, docLink: docLink)
+        return TransactionRow(
+            guid: guid,
+            date: date,
+            description: description,
+            splits: splits,
+            docLink: docLink,
+            voided: readStringSlot(node, key: "void-time") != nil,
+            voidReason: readStringSlot(node, key: "void-reason"),
+            voidTime: readStringSlot(node, key: "void-time")
+        )
     }
 
     /// Sums each account's split value (the book currency amount); not
@@ -631,6 +670,102 @@ final class XMLBookDocument {
         }
         if children(slots, localName: "slot").isEmpty {
             slots.detach()
+        }
+    }
+
+    /// Voids a transaction exactly like desktop GnuCash's own `xaccTransVoid`:
+    /// every split's value and quantity is preserved in a `void-former-*`
+    /// slot, then zeroed (so the transaction stops affecting any balance
+    /// without being deleted), every split is marked `"v"`, and the
+    /// transaction's notes/void-reason/void-time slots record why and when.
+    /// Silently no-ops on an unknown transaction, a blank reason, or one
+    /// that's already voided -- `BookStore` validates and throws before
+    /// calling this.
+    func voidTransaction(_ guid: Guid, reason: String, voidTime: String) {
+        guard let node = transactionIndex[guid], !reason.isEmpty,
+              readStringSlot(node, key: "void-time") == nil
+        else {
+            return
+        }
+        let slots = firstChild(node, localName: "slots") ?? {
+            let created = XNode(name: "trn:slots")
+            node.addChild(created)
+            return created
+        }()
+        if let existingNotes = readStringSlot(node, key: "notes") {
+            setStringSlot(slots, key: "void-former-notes", value: existingNotes)
+        }
+        setStringSlot(slots, key: "notes", value: "Voided transaction")
+        setStringSlot(slots, key: "void-reason", value: reason)
+        setStringSlot(slots, key: "void-time", value: voidTime)
+        setStringSlot(slots, key: "trans-read-only", value: "Transaction Voided")
+
+        let splitsContainer = firstChild(node, localName: "splits") ?? node
+        for splitNode in children(splitsContainer, localName: "split") {
+            guard
+                let valueText = firstChild(splitNode, localName: "value").map(decodedText),
+                let value = rational(valueText)
+            else {
+                continue
+            }
+            let quantityText = firstChild(splitNode, localName: "quantity").map(decodedText) ?? valueText
+            let quantity = rational(quantityText) ?? value
+            let splitSlots = firstChild(splitNode, localName: "slots") ?? {
+                let created = XNode(name: "split:slots")
+                splitNode.addChild(created)
+                return created
+            }()
+            setNumericSlot(splitSlots, key: "void-former-value", value: value)
+            setNumericSlot(splitSlots, key: "void-former-amount", value: quantity)
+            setChildText(splitNode, localName: "value", tag: "split:value", value: "0/\(value.denom)")
+            setChildText(splitNode, localName: "quantity", tag: "split:quantity", value: "0/\(quantity.denom)")
+            setChildText(splitNode, localName: "reconciled-state", tag: "split:reconciled-state", value: "v")
+        }
+    }
+
+    /// Reverses `voidTransaction`: restores every split's original
+    /// value/quantity and reconcile state (always back to `"n"`, matching
+    /// desktop GnuCash -- a split's reconciled state before voiding is not
+    /// preserved), restores the transaction's notes, and clears every
+    /// void-related slot. Silently no-ops on an unknown or non-voided
+    /// transaction -- `BookStore` validates and throws before calling this.
+    func unvoidTransaction(_ guid: Guid) {
+        guard let node = transactionIndex[guid], readStringSlot(node, key: "void-time") != nil else {
+            return
+        }
+        let slots = firstChild(node, localName: "slots") ?? {
+            let created = XNode(name: "trn:slots")
+            node.addChild(created)
+            return created
+        }()
+        setStringSlot(slots, key: "notes", value: readStringSlot(node, key: "void-former-notes"))
+        setStringSlot(slots, key: "void-former-notes", value: nil)
+        setStringSlot(slots, key: "void-reason", value: nil)
+        setStringSlot(slots, key: "void-time", value: nil)
+        setStringSlot(slots, key: "trans-read-only", value: nil)
+        if children(slots, localName: "slot").isEmpty { slots.detach() }
+
+        let splitsContainer = firstChild(node, localName: "splits") ?? node
+        for splitNode in children(splitsContainer, localName: "split") {
+            let formerValue = readNumericSlot(splitNode, key: "void-former-value")
+            let formerQuantity = readNumericSlot(splitNode, key: "void-former-amount")
+            if let formerValue {
+                setChildText(splitNode, localName: "value", tag: "split:value", value: "\(formerValue.num)/\(formerValue.denom)")
+            }
+            if let formerQuantity {
+                setChildText(
+                    splitNode,
+                    localName: "quantity",
+                    tag: "split:quantity",
+                    value: "\(formerQuantity.num)/\(formerQuantity.denom)"
+                )
+            }
+            setChildText(splitNode, localName: "reconciled-state", tag: "split:reconciled-state", value: "n")
+            if let splitSlots = firstChild(splitNode, localName: "slots") {
+                setNumericSlot(splitSlots, key: "void-former-value", value: nil)
+                setNumericSlot(splitSlots, key: "void-former-amount", value: nil)
+                if children(splitSlots, localName: "slot").isEmpty { splitSlots.detach() }
+            }
         }
     }
 
@@ -1199,6 +1334,64 @@ final class XMLBookDocument {
         slot.addChild(leaf("slot:key", key))
         slot.addChild(leaf("slot:value", "true", attributes: ["type": "string"]))
         return slot
+    }
+
+    private func findSlot(_ slots: XNode, key: String) -> XNode? {
+        children(slots, localName: "slot").first {
+            firstChild($0, localName: "key").map(decodedText) == key
+        }
+    }
+
+    private func readStringSlot(_ owner: XNode, key: String) -> String? {
+        guard let slots = firstChild(owner, localName: "slots"),
+              let slot = findSlot(slots, key: key)
+        else {
+            return nil
+        }
+        return firstChild(slot, localName: "value").map(decodedText)
+    }
+
+    private func setStringSlot(_ slots: XNode, key: String, value: String?) {
+        let existing = findSlot(slots, key: key)
+        guard let value else {
+            existing?.detach()
+            return
+        }
+        if let existing {
+            firstChild(existing, localName: "value")?.text = escapeXml(value)
+            return
+        }
+        let slot = XNode(name: "slot")
+        slot.addChild(leaf("slot:key", key))
+        slot.addChild(leaf("slot:value", value, attributes: ["type": "string"]))
+        slots.addChild(slot)
+    }
+
+    private func readNumericSlot(_ owner: XNode, key: String) -> Money? {
+        guard let slots = firstChild(owner, localName: "slots"),
+              let slot = findSlot(slots, key: key),
+              let valueNode = firstChild(slot, localName: "value")
+        else {
+            return nil
+        }
+        return rational(decodedText(valueNode))
+    }
+
+    private func setNumericSlot(_ slots: XNode, key: String, value: Money?) {
+        let existing = findSlot(slots, key: key)
+        guard let value else {
+            existing?.detach()
+            return
+        }
+        let valueText = "\(value.num)/\(value.denom)"
+        if let existing {
+            firstChild(existing, localName: "value")?.text = escapeXml(valueText)
+            return
+        }
+        let slot = XNode(name: "slot")
+        slot.addChild(leaf("slot:key", key))
+        slot.addChild(leaf("slot:value", valueText, attributes: ["type": "numeric"]))
+        slots.addChild(slot)
     }
 
     private func setBooleanSlot(_ slots: XNode, key: String, value: Bool) {

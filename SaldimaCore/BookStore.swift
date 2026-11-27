@@ -73,10 +73,12 @@ public struct StoredSplit: Sendable, Hashable, Identifiable {
     public let accountGuid: Guid
     public let value: Money
     public let guid: Guid?
-    /// `"n"` not reconciled, `"c"` cleared, `"y"` reconciled -- GnuCash's own codes.
+    /// `"n"` not reconciled, `"c"` cleared, `"y"` reconciled, `"v"` voided -- GnuCash's own codes.
     public let reconcileState: String
     /// Set only once `reconcileState` is `"y"`; `YYYY-MM-DD HH:MM:SS +ZZZZ`.
     public let reconcileDate: String?
+    /// Pre-void value, set only while the parent transaction is voided.
+    public let voidFormerValue: Money?
 
     public var id: Guid { guid ?? accountGuid }
 
@@ -85,13 +87,15 @@ public struct StoredSplit: Sendable, Hashable, Identifiable {
         value: Money,
         guid: Guid? = nil,
         reconcileState: String = "n",
-        reconcileDate: String? = nil
+        reconcileDate: String? = nil,
+        voidFormerValue: Money? = nil
     ) {
         self.accountGuid = accountGuid
         self.value = value
         self.guid = guid
         self.reconcileState = reconcileState
         self.reconcileDate = reconcileDate
+        self.voidFormerValue = voidFormerValue
     }
 }
 
@@ -103,6 +107,11 @@ public struct StoredTransaction: Sendable, Hashable, Identifiable {
     /// A path relative to the book's own directory, to a captured receipt
     /// image -- GnuCash's "Associate File/Location" slot. `nil` if none.
     public let docLink: String?
+    /// True once `voidTransaction` has run; every split's value is zeroed.
+    public let voided: Bool
+    public let voidReason: String?
+    /// `YYYY-MM-DD HH:MM:SS +ZZZZ`, set only while voided.
+    public let voidTime: String?
 
     public var id: Guid { guid }
 
@@ -111,13 +120,19 @@ public struct StoredTransaction: Sendable, Hashable, Identifiable {
         date: String,
         description: String,
         splits: [StoredSplit],
-        docLink: String? = nil
+        docLink: String? = nil,
+        voided: Bool = false,
+        voidReason: String? = nil,
+        voidTime: String? = nil
     ) {
         self.guid = guid
         self.date = date
         self.description = description
         self.splits = splits
         self.docLink = docLink
+        self.voided = voided
+        self.voidReason = voidReason
+        self.voidTime = voidTime
     }
 }
 
@@ -130,6 +145,9 @@ public enum JournalError: Error, Equatable, Sendable {
     case alreadyPosted(Guid)
     case unknownSplit(Guid)
     case missingReconcileDate
+    case blankVoidReason
+    case alreadyVoided(Guid)
+    case notVoided(Guid)
 }
 
 public enum AccountEditError: Error, Equatable, Sendable {
@@ -665,10 +683,14 @@ public actor BookStore {
                         value: $0.value,
                         guid: $0.guid,
                         reconcileState: $0.reconcileState,
-                        reconcileDate: $0.reconcileDate
+                        reconcileDate: $0.reconcileDate,
+                        voidFormerValue: $0.voidFormerValue
                     )
                 },
-                docLink: row.docLink
+                docLink: row.docLink,
+                voided: row.voided,
+                voidReason: row.voidReason,
+                voidTime: row.voidTime
             )
         }
     }
@@ -757,6 +779,39 @@ public actor BookStore {
     public func deleteTransaction(_ guid: Guid) throws {
         guard let document else { throw BookStoreError.cannotOpen }
         document.deleteTransaction(guid)
+        try save()
+    }
+
+    /// Voids a transaction (GnuCash's "Void Transaction", not a delete): the
+    /// original splits are preserved for audit but zeroed, so the
+    /// transaction stops affecting any balance. Can be reversed with
+    /// `unvoidTransaction`.
+    public func voidTransaction(_ guid: Guid, reason: String, voidTime: String) throws {
+        guard let document else { throw BookStoreError.cannotOpen }
+        guard let transaction = document.transaction(guid) else {
+            throw JournalError.unknownTransaction(guid)
+        }
+        guard !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw JournalError.blankVoidReason
+        }
+        guard !transaction.voided else {
+            throw JournalError.alreadyVoided(guid)
+        }
+        document.voidTransaction(guid, reason: reason, voidTime: voidTime)
+        try save()
+    }
+
+    /// Reverses `voidTransaction`. A split's reconciled state before voiding
+    /// is not restored (reset to `"n"`), matching desktop GnuCash.
+    public func unvoidTransaction(_ guid: Guid) throws {
+        guard let document else { throw BookStoreError.cannotOpen }
+        guard let transaction = document.transaction(guid) else {
+            throw JournalError.unknownTransaction(guid)
+        }
+        guard transaction.voided else {
+            throw JournalError.notVoided(guid)
+        }
+        document.unvoidTransaction(guid)
         try save()
     }
 
