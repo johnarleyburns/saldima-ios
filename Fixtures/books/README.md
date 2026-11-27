@@ -35,7 +35,17 @@ University / DFKI), Zenodo record
 receivables/payables, payroll) and balanced multi-leg journal entries; each
 file is one standalone calendar month (not a cumulative series) from the
 dataset's full 2023-01..2024-12 range, picked non-adjacent for temporal
-spread. Built by the web repo's `scripts/import-gronewald-fixture.ts`; see
-its `fixtures/books/README.md` for full provenance, per-file account/
-transaction counts, and hashes. Every file was opened and re-saved by the
-real GnuCash engine as an external oracle, with zero errors.
+spread.
+
+`gronewald-gl-full.gnucash` is the same dataset again, but as one
+continuous book spanning the entire 2023-01..2024-12 range (102,429
+transactions, 25 accounts) instead of a standalone month -- for
+year-over-year comparison (e.g. total revenue 2023 vs 2024) that a single
+month can't give you. It's a single ~10 MB file (~119 MB decompressed);
+prefer a `YYYY-MM` month above for a fast test and reach for this one
+specifically when the test needs more than one month's data.
+
+Built by the web repo's `scripts/import-gronewald-fixture.ts`; see its
+`fixtures/books/README.md` for full provenance, per-file account/
+transaction counts, and hashes. Every file here was opened and re-saved by
+the real GnuCash engine as an external oracle, with zero errors.
