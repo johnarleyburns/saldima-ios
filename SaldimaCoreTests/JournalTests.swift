@@ -246,4 +246,111 @@ extension JournalTests {
 
         await store.close()
     }
+
+    @Test("voids a transaction, zeroing its balance effect without deleting it, then unvoids it")
+    func voidAndUnvoid() async throws {
+        let url = try journalBook()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = try BookStore(url: url)
+        let ids = SeededIDGenerator()
+        let roots = try await store.accounts()
+        let checking = try #require(account(named: "Checking", in: roots))
+        let salary = try #require(account(named: "Salary", in: roots))
+
+        let txGuid = try await store.post(
+            date: "2026-02-01",
+            description: "Coffee",
+            splits: [
+                StoredSplit(accountGuid: checking.guid, value: try Money(num: -500, denom: 100)),
+                StoredSplit(accountGuid: salary.guid, value: try Money(num: 500, denom: 100)),
+            ],
+            ids: ids
+        )
+        let bankSplitGuid = try #require(
+            (try await store.transactions()).first { $0.guid == txGuid }?.splits
+                .first { $0.accountGuid == checking.guid }?.guid
+        )
+        try await store.setSplitReconcileState(
+            transactionGuid: txGuid,
+            splitGuid: bankSplitGuid,
+            state: "c",
+            reconcileDate: nil
+        )
+
+        try await store.voidTransaction(txGuid, reason: "Entered in error", voidTime: "2026-02-10 00:00:00 +0000")
+        var transactions = try await store.transactions()
+        var voided = try #require(transactions.first { $0.guid == txGuid })
+        #expect(voided.voided == true)
+        #expect(voided.voidReason == "Entered in error")
+        #expect(voided.voidTime == "2026-02-10 00:00:00 +0000")
+        var bankSplit = try #require(voided.splits.first { $0.guid == bankSplitGuid })
+        #expect(bankSplit.value.num == 0)
+        #expect(bankSplit.reconcileState == "v")
+        #expect(bankSplit.voidFormerValue == (try Money(num: -500, denom: 100)))
+
+        // Zeroed, so it no longer affects any balance.
+        let balances = try await store.balances()
+        #expect(balances[checking.guid]?.num == 0)
+
+        await store.close()
+        let reopened = try BookStore(url: url)
+        transactions = try await reopened.transactions()
+        voided = try #require(transactions.first { $0.guid == txGuid })
+        #expect(voided.voided == true)
+        #expect(voided.splits.first { $0.guid == bankSplitGuid }?.value.num == 0)
+
+        try await reopened.unvoidTransaction(txGuid)
+        transactions = try await reopened.transactions()
+        let unvoided = try #require(transactions.first { $0.guid == txGuid })
+        #expect(unvoided.voided == false)
+        #expect(unvoided.voidReason == nil)
+        bankSplit = try #require(unvoided.splits.first { $0.guid == bankSplitGuid })
+        #expect(bankSplit.value == (try Money(num: -500, denom: 100)))
+        #expect(bankSplit.reconcileState == "n")
+        #expect(bankSplit.voidFormerValue == nil)
+
+        await reopened.close()
+    }
+
+    @Test("refuses to void an unknown transaction, a blank reason, or an already-voided one; refuses to unvoid an unvoided one")
+    func voidValidation() async throws {
+        let url = try journalBook()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = try BookStore(url: url)
+        let ids = SeededIDGenerator()
+        let roots = try await store.accounts()
+        let checking = try #require(account(named: "Checking", in: roots))
+        let salary = try #require(account(named: "Salary", in: roots))
+
+        let txGuid = try await store.post(
+            date: "2026-02-01",
+            description: "Coffee",
+            splits: [
+                StoredSplit(accountGuid: checking.guid, value: try Money(num: -500, denom: 100)),
+                StoredSplit(accountGuid: salary.guid, value: try Money(num: 500, denom: 100)),
+            ],
+            ids: ids
+        )
+        let unknown = Guid(String(repeating: "f", count: 32))!
+
+        await #expect(throws: JournalError.unknownTransaction(unknown)) {
+            try await store.voidTransaction(unknown, reason: "x", voidTime: "2026-02-10 00:00:00 +0000")
+        }
+        await #expect(throws: JournalError.blankVoidReason) {
+            try await store.voidTransaction(txGuid, reason: "   ", voidTime: "2026-02-10 00:00:00 +0000")
+        }
+        await #expect(throws: JournalError.notVoided(txGuid)) {
+            try await store.unvoidTransaction(txGuid)
+        }
+
+        try await store.voidTransaction(txGuid, reason: "Entered in error", voidTime: "2026-02-11 00:00:00 +0000")
+        await #expect(throws: JournalError.alreadyVoided(txGuid)) {
+            try await store.voidTransaction(txGuid, reason: "Again", voidTime: "2026-02-12 00:00:00 +0000")
+        }
+        await #expect(throws: JournalError.unknownTransaction(unknown)) {
+            try await store.unvoidTransaction(unknown)
+        }
+
+        await store.close()
+    }
 }
