@@ -163,6 +163,148 @@ public enum AccountEditError: Error, Equatable, Sendable {
     case protectedAccount
 }
 
+/// One template split of a scheduled transaction: Milestone-1 scope,
+/// mirroring the web's locked design (`johnarleyburns/saldima#98`) -- a
+/// real posting account and a fixed, signed numeric amount. Formulas are
+/// written to the file for compatibility but never evaluated.
+public struct ScheduledSplit: Sendable, Hashable {
+    public let accountGuid: Guid
+    public let value: Money
+
+    public init(accountGuid: Guid, value: Money) {
+        self.accountGuid = accountGuid
+        self.value = value
+    }
+}
+
+/// A schedule's end condition, mutually exclusive on disk; `nil` means
+/// "no end".
+public enum ScheduledEndCondition: Sendable, Hashable {
+    case occurrences(Int)
+    case date(String)
+}
+
+/// A scheduled/recurring transaction -- desktop GnuCash's own "Scheduled
+/// Transactions" editor. `start`/`recurrence`/`templateSplits` are
+/// immutable once created (delete and recreate instead): the web's own
+/// `UpdateScheduledTransactionInput` restricts an edit to the same six
+/// fields `ScheduledTransactionEditDraft` exposes, and this mirrors that
+/// exactly rather than offering more.
+public struct ScheduledTransaction: Sendable, Hashable, Identifiable {
+    public let guid: Guid
+    public let name: String
+    public let enabled: Bool
+    public let autoCreate: Bool
+    public let autoCreateNotify: Bool
+    public let advanceCreateDays: Int
+    public let advanceRemindDays: Int
+    public let instanceCount: Int
+    public let start: String
+    public let last: String?
+    public let end: ScheduledEndCondition?
+    public let recurrence: Recurrence
+    public let templateSplits: [ScheduledSplit]
+
+    public var id: Guid { guid }
+}
+
+/// The fields a new schedule is created with. `enabled` defaults to `true`,
+/// matching desktop GnuCash's own default for a freshly created schedule.
+public struct ScheduledTransactionDraft: Sendable, Hashable {
+    public var name: String
+    public var enabled: Bool
+    public var autoCreate: Bool
+    public var autoCreateNotify: Bool
+    public var advanceCreateDays: Int
+    public var advanceRemindDays: Int
+    public var start: String
+    public var end: ScheduledEndCondition?
+    public var recurrence: Recurrence
+    public var templateSplits: [ScheduledSplit]
+
+    public init(
+        name: String,
+        enabled: Bool = true,
+        autoCreate: Bool = false,
+        autoCreateNotify: Bool = false,
+        advanceCreateDays: Int = 0,
+        advanceRemindDays: Int = 0,
+        start: String,
+        end: ScheduledEndCondition? = nil,
+        recurrence: Recurrence,
+        templateSplits: [ScheduledSplit]
+    ) {
+        self.name = name
+        self.enabled = enabled
+        self.autoCreate = autoCreate
+        self.autoCreateNotify = autoCreateNotify
+        self.advanceCreateDays = advanceCreateDays
+        self.advanceRemindDays = advanceRemindDays
+        self.start = start
+        self.end = end
+        self.recurrence = recurrence
+        self.templateSplits = templateSplits
+    }
+}
+
+/// The only fields an existing schedule can patch -- matches web exactly;
+/// everything else requires delete and recreate.
+public struct ScheduledTransactionEditDraft: Sendable, Hashable {
+    public var name: String
+    public var enabled: Bool
+    public var autoCreate: Bool
+    public var autoCreateNotify: Bool
+    public var advanceCreateDays: Int
+    public var advanceRemindDays: Int
+
+    public init(
+        name: String,
+        enabled: Bool,
+        autoCreate: Bool,
+        autoCreateNotify: Bool,
+        advanceCreateDays: Int,
+        advanceRemindDays: Int
+    ) {
+        self.name = name
+        self.enabled = enabled
+        self.autoCreate = autoCreate
+        self.autoCreateNotify = autoCreateNotify
+        self.advanceCreateDays = advanceCreateDays
+        self.advanceRemindDays = advanceRemindDays
+    }
+}
+
+/// How a due instance is handled -- mirrors the web's
+/// `dueScheduledInstances` classification exactly. `autoPost` happens
+/// silently; `autoPostNotify` also posts but stays in the review list
+/// purely for display; `needsApproval`/`reminder` wait for the owner.
+public enum ScheduledTransactionAction: String, Sendable, Hashable {
+    case autoPost
+    case autoPostNotify
+    case needsApproval
+    case reminder
+}
+
+/// One instance of a schedule that is due (or coming up) as of some
+/// reference date -- the "check on open" result shown on the register.
+public struct DueScheduledInstance: Sendable, Hashable, Identifiable {
+    public let scheduledTransactionGuid: Guid
+    public let name: String
+    public let date: String
+    public let action: ScheduledTransactionAction
+
+    public var id: String { "\(scheduledTransactionGuid.rawValue)-\(date)" }
+}
+
+public enum ScheduledTransactionError: Error, Equatable, Sendable {
+    case invalidName
+    case tooFewSplits
+    case unbalanced
+    case unknownAccount(Guid)
+    case invalidRecurrence
+    case unknownScheduledTransaction(Guid)
+}
+
 /// A GnuCash `GncCustomer` business object: a billing contact for invoices.
 public struct Customer: Hashable, Sendable, Identifiable {
     public let guid: Guid
@@ -864,6 +1006,235 @@ public actor BookStore {
     public func balances() throws -> [Guid: Money] {
         guard let document else { throw BookStoreError.cannotOpen }
         return document.balances()
+    }
+
+    // MARK: - Scheduled transactions
+
+    public func scheduledTransactions() throws -> [ScheduledTransaction] {
+        guard let document else { throw BookStoreError.cannotOpen }
+        return document.scheduledTransactions().map(Self.toScheduledTransaction)
+    }
+
+    public func scheduledTransaction(_ guid: Guid) throws -> ScheduledTransaction? {
+        guard let document else { throw BookStoreError.cannotOpen }
+        return document.scheduledTransaction(guid).map(Self.toScheduledTransaction)
+    }
+
+    private static func toScheduledTransaction(_ row: ScheduledTransactionRow) -> ScheduledTransaction {
+        ScheduledTransaction(
+            guid: row.guid,
+            name: row.name,
+            enabled: row.enabled,
+            autoCreate: row.autoCreate,
+            autoCreateNotify: row.autoCreateNotify,
+            advanceCreateDays: row.advanceCreateDays,
+            advanceRemindDays: row.advanceRemindDays,
+            instanceCount: row.instanceCount,
+            start: row.start,
+            last: row.last,
+            end: row.end.map { (end: ScheduledEnd) -> ScheduledEndCondition in
+                switch end {
+                case .occurrences(let count): return .occurrences(count)
+                case .date(let date): return .date(date)
+                }
+            },
+            recurrence: row.recurrence,
+            templateSplits: row.templateSplits.map { ScheduledSplit(accountGuid: $0.accountGuid, value: $0.value) }
+        )
+    }
+
+    /// Creates a schedule: a per-schedule template account and template
+    /// transaction mirroring the web's exact XML shape, plus the
+    /// `gnc:schedxaction` itself. Validates the way `post` does (known
+    /// accounts, splits balance to zero) plus the recurrence's own
+    /// multiplier/date validity.
+    @discardableResult
+    public func createScheduledTransaction(
+        _ draft: ScheduledTransactionDraft,
+        ids: any IDGenerator
+    ) throws -> Guid {
+        guard let document else { throw BookStoreError.cannotOpen }
+        let name = try validateScheduledDraft(draft)
+        let currency = try bookCurrency() ?? .usd
+        let guid = ids.guid()
+        document.createScheduledTransaction(
+            guid: guid,
+            name: name,
+            enabled: draft.enabled,
+            autoCreate: draft.autoCreate,
+            autoCreateNotify: draft.autoCreateNotify,
+            advanceCreateDays: draft.advanceCreateDays,
+            advanceRemindDays: draft.advanceRemindDays,
+            start: draft.start,
+            end: draft.end.map { (end: ScheduledEndCondition) -> ScheduledEnd in
+                switch end {
+                case .occurrences(let count): return .occurrences(count)
+                case .date(let date): return .date(date)
+                }
+            },
+            recurrence: draft.recurrence,
+            templateSplits: draft.templateSplits.map { ScheduledSplitRow(accountGuid: $0.accountGuid, value: $0.value) },
+            currencyCode: currency.code,
+            currencyFraction: currency.fraction,
+            ids: ids
+        )
+        try save()
+        return guid
+    }
+
+    private func validateScheduledDraft(_ draft: ScheduledTransactionDraft) throws -> String {
+        guard let document else { throw BookStoreError.cannotOpen }
+        let name = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { throw ScheduledTransactionError.invalidName }
+        guard draft.templateSplits.count >= 2 else { throw ScheduledTransactionError.tooFewSplits }
+        guard draft.recurrence.multiplier >= 1, Self.isDate(draft.start), Self.isDate(draft.recurrence.start) else {
+            throw ScheduledTransactionError.invalidRecurrence
+        }
+        let known = Set(document.accounts().map(\.guid))
+        var total = Money.zero
+        for split in draft.templateSplits {
+            guard known.contains(split.accountGuid) else {
+                throw ScheduledTransactionError.unknownAccount(split.accountGuid)
+            }
+            total = try Money.add(total, split.value)
+        }
+        guard total == .zero else { throw ScheduledTransactionError.unbalanced }
+        return name
+    }
+
+    /// Patches only the six fields the web's own
+    /// `UpdateScheduledTransactionInput` allows; everything else is
+    /// immutable after creation.
+    public func updateScheduledTransaction(_ guid: Guid, with draft: ScheduledTransactionEditDraft) throws {
+        guard let document else { throw BookStoreError.cannotOpen }
+        guard document.scheduledTransaction(guid) != nil else {
+            throw ScheduledTransactionError.unknownScheduledTransaction(guid)
+        }
+        let name = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { throw ScheduledTransactionError.invalidName }
+        document.updateScheduledTransaction(
+            guid,
+            name: name,
+            enabled: draft.enabled,
+            autoCreate: draft.autoCreate,
+            autoCreateNotify: draft.autoCreateNotify,
+            advanceCreateDays: draft.advanceCreateDays,
+            advanceRemindDays: draft.advanceRemindDays
+        )
+        try save()
+    }
+
+    public func deleteScheduledTransaction(_ guid: Guid) throws {
+        guard let document else { throw BookStoreError.cannotOpen }
+        guard document.scheduledTransaction(guid) != nil else {
+            throw ScheduledTransactionError.unknownScheduledTransaction(guid)
+        }
+        document.deleteScheduledTransaction(guid)
+        try save()
+    }
+
+    /// Every due (or soon-due) instance across every enabled schedule, as
+    /// of `asOf` -- mirroring the web's `dueScheduledInstances` exactly:
+    /// enumerates every instance since the schedule's last post/skip (not
+    /// just the next one, so a missed auto-create instance is caught up),
+    /// classifies each by `autoCreate`/`autoCreateNotify` against the
+    /// create/remind horizon, and stops at the first reminder per
+    /// schedule. A schedule whose occurrence count is exhausted
+    /// (`instanceCount >= end.occurrences`) is skipped entirely.
+    public func dueScheduledInstances(asOf: String) throws -> [DueScheduledInstance] {
+        guard let document else { throw BookStoreError.cannotOpen }
+        var due: [DueScheduledInstance] = []
+        for row in document.scheduledTransactions() where row.enabled {
+            if case .occurrences(let maxOccurrences) = row.end, row.instanceCount >= maxOccurrences {
+                continue
+            }
+            let createBoundary = try addDays(asOf, row.advanceCreateDays)
+            let remindBoundary = try addDays(createBoundary, row.advanceRemindDays)
+            var current = row.last ?? "0001-01-01"
+            var iterations = 0
+            while true {
+                iterations += 1
+                guard iterations <= 1000 else { break }
+                guard let next = try nextInstance(row.recurrence, after: current) else { break }
+                if case .date(let endDate) = row.end, next > endDate { break }
+                if next > remindBoundary { break }
+                let action: ScheduledTransactionAction
+                if next <= createBoundary {
+                    action = row.autoCreate ? (row.autoCreateNotify ? .autoPostNotify : .autoPost) : .needsApproval
+                } else {
+                    action = .reminder
+                }
+                due.append(DueScheduledInstance(
+                    scheduledTransactionGuid: row.guid,
+                    name: row.name,
+                    date: next,
+                    action: action
+                ))
+                if action == .reminder { break }
+                current = next
+            }
+        }
+        return due
+    }
+
+    /// Posts a real transaction from a schedule's template splits (fixed
+    /// numeric amounts only -- formulas are never evaluated) and advances
+    /// the schedule past `date`.
+    @discardableResult
+    public func approveScheduledInstance(_ guid: Guid, date: String, ids: any IDGenerator) throws -> Guid {
+        guard let document else { throw BookStoreError.cannotOpen }
+        guard let row = document.scheduledTransaction(guid) else {
+            throw ScheduledTransactionError.unknownScheduledTransaction(guid)
+        }
+        let txGuid = ids.guid()
+        document.postTransaction(
+            guid: txGuid,
+            date: date,
+            description: row.name,
+            splits: row.templateSplits.map { (accountGuid: $0.accountGuid, value: $0.value, splitGuid: ids.guid()) }
+        )
+        document.advanceScheduledTransaction(guid, to: date)
+        try save()
+        return txGuid
+    }
+
+    /// Advances a schedule past `date` without posting anything --
+    /// **permanently**: there is no deferred/postponed instance list, the
+    /// same deliberate Milestone-1 simplification the web carries.
+    public func skipScheduledInstance(_ guid: Guid, date: String) throws {
+        guard let document else { throw BookStoreError.cannotOpen }
+        guard document.scheduledTransaction(guid) != nil else {
+            throw ScheduledTransactionError.unknownScheduledTransaction(guid)
+        }
+        document.advanceScheduledTransaction(guid, to: date)
+        try save()
+    }
+
+    /// "Check on open": computes every due instance and immediately posts
+    /// the ones configured to auto-create -- silently for `autoPost`, or
+    /// posted-but-still-shown for `autoPostNotify` -- exactly mirroring the
+    /// web's `processDueScheduledTransactions`. Call this every time the
+    /// journal/register loads; there is no background job. Returns the
+    /// review list: everything except the silent auto-posts.
+    @discardableResult
+    public func processDueScheduledTransactions(asOf: String, ids: any IDGenerator) throws -> [DueScheduledInstance] {
+        guard let document else { throw BookStoreError.cannotOpen }
+        let due = try dueScheduledInstances(asOf: asOf)
+        var posted = false
+        for instance in due where instance.action == .autoPost || instance.action == .autoPostNotify {
+            guard let row = document.scheduledTransaction(instance.scheduledTransactionGuid) else { continue }
+            let txGuid = ids.guid()
+            document.postTransaction(
+                guid: txGuid,
+                date: instance.date,
+                description: row.name,
+                splits: row.templateSplits.map { (accountGuid: $0.accountGuid, value: $0.value, splitGuid: ids.guid()) }
+            )
+            document.advanceScheduledTransaction(instance.scheduledTransactionGuid, to: instance.date)
+            posted = true
+        }
+        if posted { try save() }
+        return due.filter { $0.action != .autoPost }
     }
 
     // MARK: - Customers
