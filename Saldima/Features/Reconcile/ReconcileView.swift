@@ -16,6 +16,7 @@ struct ReconcileView: View {
     @State private var statementDate = Date()
     @State private var statementBalanceText = ""
     @State private var error: String?
+    @State private var importingStatement = false
 
     private struct Row: Identifiable {
         let transactionGuid: Guid
@@ -125,11 +126,18 @@ struct ReconcileView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close") { dismiss() }
                 }
+                ToolbarItem(placement: .secondaryAction) {
+                    Button("Import statement\u{2026}") { importingStatement = true }
+                        .accessibilityIdentifier("reconcile.importStatement")
+                }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Finish reconciling") { finish() }
                         .buttonStyle(.glassProminent)
                         .disabled(rows.isEmpty)
                 }
+            }
+            .sheet(isPresented: $importingStatement) {
+                ImportStatementView(session: session, account: account)
             }
         }
     }

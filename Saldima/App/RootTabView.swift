@@ -22,8 +22,8 @@ struct RootTabView: View {
             Tab("Invoices", systemImage: "doc.text") {
                 InvoicesView(session: session)
             }
-            Tab("Bills", systemImage: "truck.box") {
-                BillsView(session: session)
+            Tab("Reconcile", systemImage: "checkmark.circle") {
+                ReconcileTabView(session: session)
             }
             Tab("Receipts", systemImage: "doc.viewfinder") {
                 ReceiptsView(session: session)
