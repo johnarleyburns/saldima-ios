@@ -321,6 +321,19 @@ final class XMLBookDocument {
     private var budgetIndex: [Guid: XNode] = [:]
     private var priceIndex: [Guid: XNode] = [:]
 
+    /// Decoded `transactions()` result, memoized until a mutation that could
+    /// change it invalidates the cache by setting this back to `nil`. `nil`
+    /// doubles as the dirty flag -- there is no separate bool to keep in
+    /// sync, matching how `accountIndex`/`transactionIndex` above are the
+    /// only record of whether this document's indexes are current.
+    private var cachedTransactions: [TransactionRow]?
+
+    /// Counts every real `transactionRow` decode, independent of how many
+    /// times `transactions()`/`balances()` are called. Exposed only for
+    /// tests to assert the cache is actually skipping redundant decodes --
+    /// a deterministic alternative to timing the call, which would be flaky.
+    private(set) var transactionDecodeCountForTesting = 0
+
     private init(root: XNode, book: XNode) {
         self.root = root
         self.book = book
@@ -436,6 +449,7 @@ final class XMLBookDocument {
     // MARK: - Reading
 
     private func reindex() {
+        invalidateTransactionsCache()
         accountIndex.removeAll()
         transactionIndex.removeAll()
         customerIndex.removeAll()
@@ -560,18 +574,35 @@ final class XMLBookDocument {
     }
 
     /// The transactions, newest first; splits within a transaction keep
-    /// document order.
+    /// document order. Decoding every transaction's and split's text fields
+    /// from the underlying XML tree is the hot path `balances()` and the
+    /// budget/report readers below all share, so the result is memoized in
+    /// `cachedTransactions` until a mutation invalidates it -- see
+    /// `invalidateTransactionsCache()`.
     func transactions() -> [TransactionRow] {
-        children(book, localName: "transaction")
+        if let cachedTransactions { return cachedTransactions }
+        let decoded = children(book, localName: "transaction")
             .compactMap(transactionRow)
             .sorted { $0.date > $1.date || ($0.date == $1.date && $0.guid.rawValue > $1.guid.rawValue) }
+        cachedTransactions = decoded
+        return decoded
     }
 
     func transaction(_ guid: Guid) -> TransactionRow? {
         transactionIndex[guid].flatMap(transactionRow)
     }
 
+    /// Clears the memoized `transactions()` result. Called by every method
+    /// that mutates a `gnc:transaction` node's decoded fields (posting,
+    /// reconciling, voiding/unvoiding, doc-linking, deleting) -- not just on
+    /// save, since `transactions()`/`balances()` can be called again before
+    /// the next save.
+    private func invalidateTransactionsCache() {
+        cachedTransactions = nil
+    }
+
     private func transactionRow(_ node: XNode) -> TransactionRow? {
+        transactionDecodeCountForTesting += 1
         guard let guid = guidValue(node, localName: "id"),
               let description = firstChild(node, localName: "description").map(decodedText)
         else {
@@ -1434,6 +1465,7 @@ final class XMLBookDocument {
         )
         book.addChild(node)
         transactionIndex[guid] = node
+        invalidateTransactionsCache()
         return transactionRow(node)!
     }
 
@@ -1457,6 +1489,7 @@ final class XMLBookDocument {
         else {
             return
         }
+        invalidateTransactionsCache()
         setChildText(splitNode, localName: "reconciled-state", tag: "split:reconciled-state", value: state)
         let existingDate = firstChild(splitNode, localName: "reconcile-date")
         if state == "y", let reconcileDate {
@@ -1477,6 +1510,7 @@ final class XMLBookDocument {
     /// writes. `uri = nil` removes it.
     func setTransactionDocLink(_ guid: Guid, uri: String?) {
         guard let node = transactionIndex[guid] else { return }
+        invalidateTransactionsCache()
         let slots = firstChild(node, localName: "slots") ?? {
             let created = XNode(name: "trn:slots")
             node.addChild(created)
@@ -1516,6 +1550,7 @@ final class XMLBookDocument {
         else {
             return
         }
+        invalidateTransactionsCache()
         let slots = firstChild(node, localName: "slots") ?? {
             let created = XNode(name: "trn:slots")
             node.addChild(created)
@@ -1562,6 +1597,7 @@ final class XMLBookDocument {
         guard let node = transactionIndex[guid], readStringSlot(node, key: "void-time") != nil else {
             return
         }
+        invalidateTransactionsCache()
         let slots = firstChild(node, localName: "slots") ?? {
             let created = XNode(name: "trn:slots")
             node.addChild(created)
@@ -1602,6 +1638,7 @@ final class XMLBookDocument {
         guard let node = transactionIndex[guid] else { return }
         node.detach()
         transactionIndex.removeValue(forKey: guid)
+        invalidateTransactionsCache()
     }
 
     // MARK: - Reading: customers

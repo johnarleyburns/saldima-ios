@@ -118,6 +118,64 @@ struct XMLBookDocumentTests {
         #expect(document.transactions().count == 1)
     }
 
+    @Test("memoizes decoded transactions so a repeat balances() call re-decodes nothing")
+    func balancesMemoizesTransactionDecode() throws {
+        let document = try XMLBookDocument.parse(data: loadFixtureData("oracle-mini.gnucash"))
+
+        _ = document.balances()
+        let decodesAfterFirstCall = document.transactionDecodeCountForTesting
+        #expect(decodesAfterFirstCall > 0)
+
+        _ = document.balances()
+        #expect(document.transactionDecodeCountForTesting == decodesAfterFirstCall)
+
+        _ = document.transactions()
+        #expect(document.transactionDecodeCountForTesting == decodesAfterFirstCall)
+    }
+
+    @Test("balances() reflects a transaction posted after an earlier call -- the cache invalidates on mutation")
+    func balancesInvalidatesCacheOnPost() throws {
+        let document = try XMLBookDocument.parse(data: loadFixtureData("oracle-mini.gnucash"))
+        let bank = try #require(document.accounts().first { $0.name == "Bank" }?.guid)
+        let salary = try #require(document.accounts().first { $0.name == "Salary" }?.guid)
+
+        let before = document.balances()
+        let decodesBeforePost = document.transactionDecodeCountForTesting
+
+        let txGuid = try #require(Guid(String(repeating: "7", count: 32)))
+        let split1 = try #require(Guid(String(repeating: "8", count: 32)))
+        let split2 = try #require(Guid(String(repeating: "9", count: 32)))
+        document.postTransaction(
+            guid: txGuid,
+            date: "2026-04-01",
+            description: "Freelance gig",
+            splits: [
+                (accountGuid: bank, value: try Money(num: 1500, denom: 100), splitGuid: split1),
+                (accountGuid: salary, value: try Money(num: -1500, denom: 100), splitGuid: split2),
+            ]
+        )
+
+        let after = document.balances()
+        #expect(document.transactionDecodeCountForTesting > decodesBeforePost)
+        #expect(after[bank] == (try Money.add(before[bank] ?? .zero, Money(num: 1500, denom: 100))))
+        #expect(after[salary] == (try Money.add(before[salary] ?? .zero, Money(num: -1500, denom: 100))))
+    }
+
+    @Test("balances() reflects a voided transaction after an earlier call -- void also invalidates the cache")
+    func balancesInvalidatesCacheOnVoid() throws {
+        let document = try XMLBookDocument.parse(data: loadFixtureData("oracle-mini.gnucash"))
+        let existingTxGuid = try #require(document.transactions().first?.guid)
+
+        _ = document.balances()
+        let decodesBeforeVoid = document.transactionDecodeCountForTesting
+
+        document.voidTransaction(existingTxGuid, reason: "test", voidTime: "2026-04-01 00:00:00 +0000")
+
+        let after = document.balances()
+        #expect(document.transactionDecodeCountForTesting > decodesBeforeVoid)
+        #expect(after.values.allSatisfy { $0 == .zero })
+    }
+
     @Test("creates a customer, an invoice with lines, and posts it as a real transaction")
     func invoicingCRUD() throws {
         let document = try XMLBookDocument.parse(data: loadFixtureData("oracle-mini.gnucash"))
