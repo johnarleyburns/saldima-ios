@@ -212,9 +212,12 @@ covers portable logic.
   SQLite actor and account-tree acceptance cannot fully pass without it.
 - **Account-tree vector.** The synthetic vector now matches across tracks.
   The real-book vector is still pending the owner's fixture.
-- **Purchases.** Standalone use is free with an optional one-time StoreKit 2
-  unlock (open question). Hosting is bought on the web; Apple may require the
-  subscription to be sold in the app too. Decide before P5.
+- **Purchases — resolved.** Decided and shipped (P1-MOBILE M4): standalone use
+  is free, with the optional one-time Supporter consumable described under
+  "Product model" above. It never gates a feature. Whether Apple will also
+  require hosting to be sold as an in-app purchase, rather than only on the
+  web, is a separate question to revisit before any in-app hosting signup
+  flow ships (not before P5 specifically).
 - **Int64 vs web bigint.** GnuCash values fit 64-bit integers in practice; the
   web uses `bigint`. If a fixture exceeds `Int64`, fail loudly rather than
   truncate.
