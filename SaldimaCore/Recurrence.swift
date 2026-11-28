@@ -147,6 +147,18 @@ public func addDays(_ date: String, _ days: Int) throws -> String {
     return formatDate(civilFromDays(daysFromCivil(parts) + days))
 }
 
+/// Absolute number of whole days between two `YYYY-MM-DD` dates,
+/// order-independent -- ported from the web track's
+/// `packages/gnucash/src/recurrence.ts` `daysBetween` (the web's own locked
+/// design, `johnarleyburns/saldima#104`). Used by
+/// `XMLBookDocument.nearestPrice` to pick the price closest in time to a
+/// lookup date.
+public func daysBetween(_ a: String, _ b: String) throws -> Int {
+    let left = try parseDate(a)
+    let right = try parseDate(b)
+    return abs(daysFromCivil(right) - daysFromCivil(left))
+}
+
 // MARK: - Day resolution
 
 private func resolveDay(periodType: PeriodType, start: DateParts, targetYear: Int, targetMonth: Int) -> DateParts {
