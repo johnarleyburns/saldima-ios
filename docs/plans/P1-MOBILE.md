@@ -34,6 +34,32 @@ and removable.
 - [x] [#23 M4 Supporter one-time consumable](https://github.com/johnarleyburns/saldima-ios/issues/23):
       core policy + StoreKit adapter + Settings card landed; App Store Connect
       product remains owner-only.
+### Feature parity shipped beyond M2's original scope
+
+M2's "standalone book" milestone only covered the core ledger and account
+tree; the following desktop-GnuCash-parity features have since shipped on
+top of it, each its own PR, confirmed via `git log`/`gh pr list`:
+
+- [x] Manual reconcile (GnuCash's Reconcile window) — [#64](https://github.com/johnarleyburns/saldima-ios/pull/64)
+- [x] Report periods (as-of balance sheet/trial balance, P&L date ranges) — [#65](https://github.com/johnarleyburns/saldima-ios/pull/65)
+- [x] Vendor bills (accounts payable) — [#66](https://github.com/johnarleyburns/saldima-ios/pull/66)
+- [x] Void/unvoid a posted transaction — [#68](https://github.com/johnarleyburns/saldima-ios/pull/68)
+- [x] Export a register as QIF/CSV (mirrors web) — [#71](https://github.com/johnarleyburns/saldima-ios/pull/71)
+- [x] Journal search (find transactions in the register) — [#73](https://github.com/johnarleyburns/saldima-ios/pull/73)
+- [x] Register and Reports moved into the Accounts screen's overflow menu;
+      Reports redesigned as real financial statements — [#76](https://github.com/johnarleyburns/saldima-ios/pull/76)
+- [x] Scheduled/recurring transactions (mirrors web #98) — [#79](https://github.com/johnarleyburns/saldima-ios/pull/79)
+- [x] Budgets (mirrors web #102) — [#81](https://github.com/johnarleyburns/saldima-ios/pull/81)/[#82](https://github.com/johnarleyburns/saldima-ios/pull/82)
+- [x] Multi-currency price database (mirrors web #104/#107) — [#84](https://github.com/johnarleyburns/saldima-ios/pull/84)
+- [x] Reconcile tab (moved off a buried "Edit account" button) and a
+      QIF/OFX/CSV/PDF statement importer, ported from web's
+      `packages/importers` plus a mobile-only PDF line-parsing heuristic —
+      [#85](https://github.com/johnarleyburns/saldima-ios/pull/85). Bills
+      moved from the tab bar into the Accounts overflow menu in the same PR.
+
+The Accounts overflow menu now holds Register, Reports, Scheduled, Budgets,
+Prices and Bills; the tab bar is Accounts, Invoices, Reconcile, Receipts.
+
 - [ ] Android P0 parity: see `saldima-android/docs/plans/P0.md`.
 - Web↔mobile matrix and gate: `saldima/docs/plans/mobile-parity.md`.
 - Next phase: `saldima/docs/plans/P2.md` — both GnuCash formats, 100 industry
