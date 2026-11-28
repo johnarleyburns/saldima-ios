@@ -73,6 +73,7 @@ struct AccountsView: View {
         case scheduled
         case budgets
         case prices
+        case bills
 
         var id: String {
             switch self {
@@ -84,6 +85,7 @@ struct AccountsView: View {
             case .scheduled: "scheduled"
             case .budgets: "budgets"
             case .prices: "prices"
+            case .bills: "bills"
             }
         }
     }
@@ -172,6 +174,12 @@ struct AccountsView: View {
                                     Label("Prices", systemImage: "arrow.left.arrow.right")
                                 }
                                 .accessibilityIdentifier("accounts.prices")
+                                Button {
+                                    sheet = .bills
+                                } label: {
+                                    Label("Bills", systemImage: "truck.box")
+                                }
+                                .accessibilityIdentifier("accounts.bills")
                                 Divider()
                             }
                             Button {
@@ -217,6 +225,8 @@ struct AccountsView: View {
                         BudgetsView(session: session)
                     case .prices:
                         PricesView(session: session)
+                    case .bills:
+                        BillsView(session: session)
                     }
                 }
                 .alert(
@@ -432,7 +442,6 @@ private struct AccountEditor: View {
     @State private var hidden: Bool
     @State private var placeholder: Bool
     @State private var confirmingDelete = false
-    @State private var reconciling = false
     @State private var exportDocument: RegisterExportDocument?
     @State private var exportFilename = ""
     @State private var exportContentType = UTType.plainText
@@ -488,12 +497,6 @@ private struct AccountEditor: View {
                 }
                 if editing != nil {
                     Section {
-                        Button("Reconcile") {
-                            reconciling = true
-                        }
-                        .accessibilityIdentifier("account.reconcile")
-                    }
-                    Section {
                         Button("Export QIF") { exportRegister(extension: "qif") }
                         Button("Export CSV") { exportRegister(extension: "csv") }
                     }
@@ -514,11 +517,6 @@ private struct AccountEditor: View {
                     Button("Save") { save() }
                         .buttonStyle(.glassProminent)
                     .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
-                }
-            }
-            .sheet(isPresented: $reconciling) {
-                if let editing {
-                    ReconcileView(session: session, account: editing)
                 }
             }
             .fileExporter(

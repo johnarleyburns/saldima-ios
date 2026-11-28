@@ -244,6 +244,33 @@ final class BookSession {
         }
     }
 
+    /// Same as `post(date:description:splits:)`, but takes the `yyyy-MM-dd`
+    /// date string directly instead of a `Date` -- for callers (the
+    /// statement importer's `planImport` output) that already have an
+    /// ISO date string and shouldn't round-trip it through `Date` just to
+    /// come straight back out through the same formatter.
+    @discardableResult
+    func post(
+        dateString: String,
+        description: String,
+        splits: [(account: Guid, amount: Money)]
+    ) async -> Bool {
+        guard let store else { return false }
+        do {
+            try await store.post(
+                date: dateString,
+                description: description,
+                splits: splits.map { StoredSplit(accountGuid: $0.account, value: $0.amount) },
+                ids: ids
+            )
+            try await refresh()
+            return true
+        } catch {
+            lastError = Self.message(for: error)
+            return false
+        }
+    }
+
     /// The same action as checking a row off in GnuCash's Reconcile window.
     @discardableResult
     func setSplitReconcileState(
