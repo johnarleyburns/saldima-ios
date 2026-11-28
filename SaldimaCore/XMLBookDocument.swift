@@ -82,6 +82,43 @@ struct BudgetPeriodRangeRow: Sendable, Hashable {
     let end: String
 }
 
+/// A commodity or currency reference: GnuCash's `cmdty:space`/`cmdty:id`
+/// pair (e.g. `CURRENCY`/`USD`, `NASDAQ`/`AAPL`). Shared by `XMLBookDocument`
+/// and `BookStore`'s public price API -- mirrors the web engine's
+/// `CommodityRef` (`johnarleyburns/saldima#104`).
+public struct CommodityRef: Sendable, Hashable, Codable {
+    public let space: String
+    public let id: String
+
+    public init(space: String, id: String) {
+        self.space = space
+        self.id = id
+    }
+}
+
+/// A GnuCash `GNCPrice`: one entry in the book's price database (desktop's
+/// own Price Editor / exchange-rate database), recording `value` units of
+/// `currency` per unit of `commodity` as of `date`. Milestone 1 (mirrors the
+/// web engine's locked design, `johnarleyburns/saldima#104`): every price
+/// this engine creates carries `source == "user:price-editor"` -- no online
+/// quote fetching. The commodity/currency pair is immutable once created,
+/// the same convention scheduled transactions and budgets use.
+struct PriceRow: Sendable, Hashable, Identifiable {
+    let guid: Guid
+    let commodity: CommodityRef
+    let currency: CommodityRef
+    /// Plain `YYYY-MM-DD`, truncated from the on-disk `HH:MM:SS +ZZZZ`
+    /// timestamp -- matching `TransactionRow.date`; this engine always
+    /// writes midnight UTC, so no intra-day precision is ever lost.
+    let date: String
+    let source: String
+    /// Free text on the wire (desktop writes `last`/`bid`/`ask`/`nav`/etc.); `""` if unset.
+    let type: String
+    let value: Money
+
+    var id: Guid { guid }
+}
+
 /// Thrown only by the budget engine's own computed reads
 /// (`periodRange`/`budgetActual`) -- every budget mutation is otherwise
 /// non-throwing, trusting `BookStore` to validate first, the same split of
@@ -282,6 +319,7 @@ final class XMLBookDocument {
     private var vendorIndex: [Guid: XNode] = [:]
     private var scheduledTransactionIndex: [Guid: XNode] = [:]
     private var budgetIndex: [Guid: XNode] = [:]
+    private var priceIndex: [Guid: XNode] = [:]
 
     private init(root: XNode, book: XNode) {
         self.root = root
@@ -441,6 +479,14 @@ final class XMLBookDocument {
         for node in children(book, localName: "budget") {
             if let guid = guidValue(node, localName: "id") {
                 budgetIndex[guid] = node
+            }
+        }
+        priceIndex.removeAll()
+        if let pricedbNode = firstChild(book, localName: "pricedb") {
+            for node in children(pricedbNode, localName: "price") {
+                if let guid = guidValue(node, localName: "id") {
+                    priceIndex[guid] = node
+                }
             }
         }
     }
@@ -1109,6 +1155,179 @@ final class XMLBookDocument {
             node.addChild(leaf("recurrence:weekend_adj", recurrence.weekendAdjust.rawValue))
         }
         return node
+    }
+
+    // MARK: - Reading: prices
+
+    private func findPricedbNode() -> XNode? {
+        firstChild(book, localName: "pricedb")
+    }
+
+    func prices() -> [PriceRow] {
+        guard let pricedbNode = findPricedbNode() else { return [] }
+        return children(pricedbNode, localName: "price").compactMap(priceRow)
+    }
+
+    func price(_ guid: Guid) -> PriceRow? {
+        priceIndex[guid].flatMap(priceRow)
+    }
+
+    private func readCommodityRef(_ parent: XNode, localName name: String) -> CommodityRef? {
+        guard let node = firstChild(parent, localName: name),
+              let space = firstChild(node, localName: "space").map(decodedText),
+              let id = firstChild(node, localName: "id").map(decodedText)
+        else {
+            return nil
+        }
+        return CommodityRef(space: space, id: id)
+    }
+
+    private func priceRow(_ node: XNode) -> PriceRow? {
+        guard let guid = guidValue(node, localName: "id"),
+              let commodity = readCommodityRef(node, localName: "commodity"),
+              let currency = readCommodityRef(node, localName: "currency"),
+              let valueText = firstChild(node, localName: "value").map(decodedText),
+              let value = rational(valueText)
+        else {
+            return nil
+        }
+        let date = firstChild(node, localName: "time")
+            .flatMap { firstChild($0, localName: "date") }
+            .map(decodedText)
+            .map { String($0.prefix(10)) } ?? ""
+        let source = firstChild(node, localName: "source").map(decodedText) ?? ""
+        let type = firstChild(node, localName: "type").map(decodedText) ?? ""
+        return PriceRow(guid: guid, commodity: commodity, currency: currency, date: date, source: source, type: type, value: value)
+    }
+
+    /// The price for `commodity`/`currency` closest in time to `asOf`
+    /// (desktop GnuCash's `gnc_pricedb_lookup_nearest_in_time`), or `nil` if
+    /// none exists for that exact pair. Milestone 1: directional only -- no
+    /// reciprocal-pair fallback, matching the web engine's `nearestPrice`.
+    func nearestPrice(commodity: CommodityRef, currency: CommodityRef, asOf: String) throws -> PriceRow? {
+        let candidates = prices().filter { candidate in
+            candidate.commodity.space == commodity.space && candidate.commodity.id == commodity.id
+                && candidate.currency.space == currency.space && candidate.currency.id == currency.id
+        }
+        var best: PriceRow?
+        var bestDistance = Int.max
+        for candidate in candidates {
+            let distance = try daysBetween(candidate.date, asOf)
+            if distance < bestDistance {
+                best = candidate
+                bestDistance = distance
+            }
+        }
+        return best
+    }
+
+    /// Converts `value` (in `from`'s commodity) to `to`'s commodity using
+    /// the nearest price as of `asOf`. `nil` -- never a silent 1:1 guess --
+    /// when no price exists for the pair and the commodities aren't
+    /// identical.
+    func convertMoney(_ value: Money, from: CommodityRef, to: CommodityRef, asOf: String) throws -> Money? {
+        if from.space == to.space && from.id == to.id { return value }
+        guard let price = try nearestPrice(commodity: from, currency: to, asOf: asOf) else { return nil }
+        return try Money.multiply(value, price.value)
+    }
+
+    // MARK: - Mutating: prices
+
+    private static func commodityNode(tag: String, ref: CommodityRef) -> XNode {
+        let node = XNode(name: tag)
+        node.addChild(leaf("cmdty:space", ref.space))
+        node.addChild(leaf("cmdty:id", ref.id))
+        return node
+    }
+
+    /// `<gnc:pricedb>` sits right after the last `<gnc:commodity>` -- before
+    /// any account/transaction. Falls back to right after `book:id` on the
+    /// (unrealistic in practice, every real book declares a currency) case
+    /// of a book with no commodities at all, rather than before it.
+    /// Mirrors the web engine's `findOrCreatePricedbNode`
+    /// (`johnarleyburns/saldima#104`).
+    private func findOrCreatePricedbNode() -> XNode {
+        if let existing = findPricedbNode() { return existing }
+        let created = XNode(name: "gnc:pricedb", attributes: ["version": "1"])
+        let anchor = children(book, localName: "commodity").last ?? firstChild(book, localName: "id")
+        if let anchor, let index = anchor.indexInParent {
+            book.insertChild(created, at: index + 1)
+        } else {
+            book.insertChild(created, at: 0)
+        }
+        return created
+    }
+
+    /// Creates a `<price>` in the book's price database, mirroring the
+    /// web's exact XML shape byte-for-byte (`johnarleyburns/saldima#104`):
+    /// `price:id`, `price:commodity`, `price:currency`, `price:time`,
+    /// `price:source` (always `user:price-editor` in this milestone),
+    /// `price:type` (omitted entirely when `type` is empty), `price:value`.
+    @discardableResult
+    func createPrice(
+        guid: Guid,
+        commodity: CommodityRef,
+        currency: CommodityRef,
+        date: String,
+        type: String,
+        value: Money
+    ) -> PriceRow {
+        let pricedbNode = findOrCreatePricedbNode()
+        let node = XNode(name: "price")
+        node.addChild(leaf("price:id", guid.rawValue, attributes: ["type": "guid"]))
+        node.addChild(Self.commodityNode(tag: "price:commodity", ref: commodity))
+        node.addChild(Self.commodityNode(tag: "price:currency", ref: currency))
+        let timeWrapper = XNode(name: "price:time")
+        timeWrapper.addChild(leaf("ts:date", "\(date) 00:00:00 +0000"))
+        node.addChild(timeWrapper)
+        // Milestone 1: every price this engine creates is user-entered.
+        node.addChild(leaf("price:source", "user:price-editor"))
+        if !type.isEmpty { node.addChild(leaf("price:type", type)) }
+        node.addChild(leaf("price:value", "\(value.num)/\(value.denom)"))
+        pricedbNode.addChild(node)
+        priceIndex[guid] = node
+        return priceRow(node)!
+    }
+
+    /// Patches date, type and value only -- the commodity/currency pair is
+    /// immutable after creation, matching the web engine's own
+    /// `UpdatePriceInput` and the same convention scheduled transactions
+    /// and budgets use. A silent no-op on an unknown price.
+    func updatePrice(_ guid: Guid, date: String?, type: String?, value: Money?) {
+        guard let node = priceIndex[guid] else { return }
+        if let date, let timeWrapper = firstChild(node, localName: "time") {
+            setChildText(timeWrapper, localName: "date", tag: "ts:date", value: "\(date) 00:00:00 +0000")
+        }
+        if let type {
+            let existingType = firstChild(node, localName: "type")
+            if let existingType {
+                if type.isEmpty {
+                    existingType.detach()
+                } else {
+                    existingType.text = escapeXml(type)
+                }
+            } else if !type.isEmpty {
+                let newType = leaf("price:type", type)
+                if let valueNode = firstChild(node, localName: "value"), let index = valueNode.indexInParent {
+                    node.insertChild(newType, at: index)
+                } else {
+                    node.addChild(newType)
+                }
+            }
+        }
+        if let value {
+            setChildText(node, localName: "value", tag: "price:value", value: "\(value.num)/\(value.denom)")
+        }
+    }
+
+    /// Deletes a price; a silent no-op on an unknown guid, matching
+    /// `deleteAccount`/`deleteBudget`. Real GnuCash omits `<gnc:pricedb>`
+    /// entirely once it holds no prices -- so does this engine.
+    func deletePrice(_ guid: Guid) {
+        guard let node = priceIndex[guid], let pricedbNode = findPricedbNode() else { return }
+        node.detach()
+        priceIndex.removeValue(forKey: guid)
+        if pricedbNode.children.isEmpty { pricedbNode.detach() }
     }
 
     // MARK: - Mutating: accounts
@@ -1905,6 +2124,7 @@ final class XMLBookDocument {
         "xmlns:book": "http://www.gnucash.org/XML/book",
         "xmlns:cd": "http://www.gnucash.org/XML/cd",
         "xmlns:cmdty": "http://www.gnucash.org/XML/cmdty",
+        "xmlns:price": "http://www.gnucash.org/XML/price",
         "xmlns:slot": "http://www.gnucash.org/XML/slot",
         "xmlns:split": "http://www.gnucash.org/XML/split",
         "xmlns:trn": "http://www.gnucash.org/XML/trn",

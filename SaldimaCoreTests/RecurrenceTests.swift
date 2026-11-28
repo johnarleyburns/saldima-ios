@@ -123,4 +123,12 @@ struct RecurrenceTests {
         #expect(try addDays("2026-01-30", 5) == "2026-02-04")
         #expect(try addDays("2026-03-01", -1) == "2026-02-28")
     }
+
+    @Test("daysBetween is absolute and order-independent")
+    func daysBetweenHelper() throws {
+        #expect(try daysBetween("2026-01-01", "2026-01-10") == 9)
+        #expect(try daysBetween("2026-01-10", "2026-01-01") == 9)
+        #expect(try daysBetween("2026-01-01", "2026-01-01") == 0)
+        #expect(try daysBetween("2025-12-28", "2026-01-04") == 7)
+    }
 }

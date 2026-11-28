@@ -20,6 +20,7 @@ final class BookSession {
     private(set) var netAssets: Money = .zero
     private(set) var profit: Money = .zero
     private(set) var fraction: Int64 = 100
+    private(set) var currencyCode: String = "USD"
     private(set) var isLoading = false
     private(set) var customers: [Customer] = []
     private(set) var invoices: [Invoice] = []
@@ -32,6 +33,7 @@ final class BookSession {
     /// job exists.
     private(set) var dueScheduledInstances: [DueScheduledInstance] = []
     private(set) var budgets: [Budget] = []
+    private(set) var prices: [Price] = []
     var lastError: String?
 
     private let ids: any IDGenerator
@@ -461,6 +463,47 @@ final class BookSession {
         }
     }
 
+    // MARK: - Prices
+
+    @discardableResult
+    func savePrice(_ draft: PriceDraft) async -> Bool {
+        guard let store else { return false }
+        do {
+            try await store.createPrice(draft, ids: ids)
+            try await refresh()
+            return true
+        } catch {
+            lastError = Self.message(for: error)
+            return false
+        }
+    }
+
+    @discardableResult
+    func updatePrice(_ guid: Guid, with draft: PriceEditDraft) async -> Bool {
+        guard let store else { return false }
+        do {
+            try await store.updatePrice(guid, with: draft)
+            try await refresh()
+            return true
+        } catch {
+            lastError = Self.message(for: error)
+            return false
+        }
+    }
+
+    @discardableResult
+    func delete(_ price: Price) async -> Bool {
+        guard let store else { return false }
+        do {
+            try await store.deletePrice(price.guid)
+            try await refresh()
+            return true
+        } catch {
+            lastError = Self.message(for: error)
+            return false
+        }
+    }
+
     // MARK: - Receipts
 
     /// A receipt image's path is stored relative to the book's own
@@ -830,9 +873,11 @@ final class BookSession {
         bills = try await store.bills()
         scheduledTransactions = try await store.scheduledTransactions()
         budgets = try await store.budgets()
+        prices = try await store.prices()
         totals = try AccountRollup.totals(accounts, balances: balances)
         if let currency = try await store.bookCurrency() {
             fraction = currency.fraction
+            currencyCode = currency.code
         }
         var assets = Money.zero
         var liabilities = Money.zero
@@ -956,6 +1001,10 @@ final class BookSession {
             return "That budget period is invalid."
         case BudgetError.unknownBudget:
             return "That budget is no longer in the book."
+        case PriceError.invalidDate:
+            return "Enter a valid date."
+        case PriceError.unknownPrice:
+            return "That price is no longer in the book."
         default:
             return error.localizedDescription
         }

@@ -390,6 +390,72 @@ public enum BudgetError: Error, Equatable, Sendable {
     case unknownBudget(Guid)
 }
 
+/// A GnuCash `GNCPrice` (desktop's own Price Editor / exchange-rate
+/// database): `value` units of `currency` per unit of `commodity` as of
+/// `date`. The commodity/currency pair is immutable once created -- same
+/// convention as scheduled transactions and budgets (delete and recreate
+/// instead) -- mirroring the web engine's locked design
+/// (`johnarleyburns/saldima#104`). Milestone 1: every price this engine
+/// creates carries `source == "user:price-editor"`, never an online quote;
+/// no reciprocal-pair fallback and no same-day-only/nearest-before lookup
+/// variants (see `BookStore.nearestPrice`).
+public struct Price: Sendable, Hashable, Identifiable {
+    public let guid: Guid
+    public let commodity: CommodityRef
+    public let currency: CommodityRef
+    /// Plain `YYYY-MM-DD`.
+    public let date: String
+    public let source: String
+    /// Free text (desktop writes `last`/`bid`/`ask`/`nav`/etc.); `""` if unset.
+    public let type: String
+    public let value: Money
+
+    public var id: Guid { guid }
+}
+
+/// The fields a new price is created with.
+public struct PriceDraft: Sendable, Hashable {
+    public var commodity: CommodityRef
+    public var currency: CommodityRef
+    public var date: String
+    public var type: String
+    public var value: Money
+
+    public init(
+        commodity: CommodityRef,
+        currency: CommodityRef,
+        date: String,
+        type: String = "",
+        value: Money
+    ) {
+        self.commodity = commodity
+        self.currency = currency
+        self.date = date
+        self.type = type
+        self.value = value
+    }
+}
+
+/// The only fields an existing price can patch -- the commodity/currency
+/// pair can't be changed here; delete this price and create a new one
+/// instead, matching the web engine's own `UpdatePriceInput`.
+public struct PriceEditDraft: Sendable, Hashable {
+    public var date: String
+    public var type: String
+    public var value: Money
+
+    public init(date: String, type: String = "", value: Money) {
+        self.date = date
+        self.type = type
+        self.value = value
+    }
+}
+
+public enum PriceError: Error, Equatable, Sendable {
+    case invalidDate
+    case unknownPrice(Guid)
+}
+
 /// A GnuCash `GncCustomer` business object: a billing contact for invoices.
 public struct Customer: Hashable, Sendable, Identifiable {
     public let guid: Guid
@@ -1472,6 +1538,96 @@ public actor BookStore {
             rows.append(BudgetGridRow(accountGuid: accountGuid, accountName: account.name, budgeted: budgeted, actual: actual))
         }
         return BudgetGrid(periods: periods, rows: rows)
+    }
+
+    // MARK: - Prices
+
+    public func prices() throws -> [Price] {
+        guard let document else { throw BookStoreError.cannotOpen }
+        return document.prices().map(Self.toPrice)
+    }
+
+    public func price(_ guid: Guid) throws -> Price? {
+        guard let document else { throw BookStoreError.cannotOpen }
+        return document.price(guid).map(Self.toPrice)
+    }
+
+    private static func toPrice(_ row: PriceRow) -> Price {
+        Price(
+            guid: row.guid,
+            commodity: row.commodity,
+            currency: row.currency,
+            date: row.date,
+            source: row.source,
+            type: row.type,
+            value: row.value
+        )
+    }
+
+    /// Creates a price: a commodity/currency pair, a date, an optional free-text
+    /// type and a value, mirroring the web's exact XML shape
+    /// (`johnarleyburns/saldima#104`). The commodity/currency pair is
+    /// immutable after creation, the same convention scheduled transactions
+    /// and budgets use.
+    @discardableResult
+    public func createPrice(_ draft: PriceDraft, ids: any IDGenerator) throws -> Guid {
+        guard let document else { throw BookStoreError.cannotOpen }
+        guard Self.isDate(draft.date) else { throw PriceError.invalidDate }
+        let guid = ids.guid()
+        document.createPrice(
+            guid: guid,
+            commodity: draft.commodity,
+            currency: draft.currency,
+            date: draft.date,
+            type: draft.type,
+            value: draft.value
+        )
+        try save()
+        return guid
+    }
+
+    /// Patches date, type and value only -- the commodity/currency pair
+    /// can't be changed here; delete this price and create a new one
+    /// instead, matching the web engine's own `UpdatePriceInput`.
+    public func updatePrice(_ guid: Guid, with draft: PriceEditDraft) throws {
+        guard let document else { throw BookStoreError.cannotOpen }
+        guard document.price(guid) != nil else { throw PriceError.unknownPrice(guid) }
+        guard Self.isDate(draft.date) else { throw PriceError.invalidDate }
+        document.updatePrice(guid, date: draft.date, type: draft.type, value: draft.value)
+        try save()
+    }
+
+    public func deletePrice(_ guid: Guid) throws {
+        guard let document else { throw BookStoreError.cannotOpen }
+        guard document.price(guid) != nil else { throw PriceError.unknownPrice(guid) }
+        document.deletePrice(guid)
+        try save()
+    }
+
+    /// The price for `commodity`/`currency` closest in time to `asOf`, or
+    /// `nil` if none exists for that exact pair. Milestone 1: directional
+    /// only -- no reciprocal-pair fallback, matching the web engine's own
+    /// `nearestPrice`.
+    public func nearestPrice(commodity: CommodityRef, currency: CommodityRef, asOf: String) throws -> Price? {
+        guard let document else { throw BookStoreError.cannotOpen }
+        do {
+            return try document.nearestPrice(commodity: commodity, currency: currency, asOf: asOf).map(Self.toPrice)
+        } catch is RecurrenceError {
+            throw PriceError.invalidDate
+        }
+    }
+
+    /// Converts `value` (in `from`'s commodity) to `to`'s commodity using
+    /// the nearest price as of `asOf`. `nil` -- never a silent 1:1 guess --
+    /// when no price exists for the pair and the commodities aren't
+    /// identical.
+    public func convertMoney(_ value: Money, from: CommodityRef, to: CommodityRef, asOf: String) throws -> Money? {
+        guard let document else { throw BookStoreError.cannotOpen }
+        do {
+            return try document.convertMoney(value, from: from, to: to, asOf: asOf)
+        } catch is RecurrenceError {
+            throw PriceError.invalidDate
+        }
     }
 
     // MARK: - Customers
